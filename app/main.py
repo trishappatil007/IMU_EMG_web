@@ -1,4 +1,4 @@
-"""Local IMU acquisition foundation; replace the simulator with a sensor adapter."""
+"""Local simulated acquisition and trial review; hardware is not connected yet."""
 import asyncio
 import csv
 import json
@@ -15,14 +15,30 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 STATIC = Path(__file__).parent / "static"
+SAMPLE_RATE_HZ = 50  # nominal simulator rate, not a guaranteed measured rate
+CSV_FIELDS = ("participant_id", "session_id", "gesture", "trial_id", "sensor_model",
+              "timestamp_ns", "sequence_number", "ax", "ay", "az", "gx", "gy", "gz")
+AXES = ("ax", "ay", "az", "gx", "gy", "gz")
 
 
 class Trial(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    participant: str = Field(min_length=1, max_length=80)
-    session: str = Field(min_length=1, max_length=80)
+    participant_id: str = Field(min_length=1, max_length=80)
+    session_id: str = Field(min_length=1, max_length=80)
     gesture: str = Field(min_length=1, max_length=80)
-    trial: int = Field(ge=1, strict=True)
+    trial_id: int = Field(ge=1, strict=True)
+    mounting_location: str = Field(default="", max_length=200)
+    orientation_notes: str = Field(default="", max_length=500)
+    trial_notes: str = Field(default="", max_length=1000)
+    accelerometer_range: str = Field(default="", max_length=100)
+    gyroscope_range: str = Field(default="", max_length=100)
+
+
+class StartCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str
+    metadata: Trial
+    countdown_seconds: int = Field(default=3, ge=0, le=30, strict=True)
 
 
 class Acquisition:
@@ -33,47 +49,139 @@ class Acquisition:
         self.handle = None
         self.writer = None
         self.filename = None
+        self.sidecar = None
         self.count = 0
         self.sequence = 0
         self.error = None
+        self.phase = "idle"
+        self.countdown_remaining = None
+        self.countdown_task = None
+        self.trial_info = None
 
     def status(self):
-        return {"type": "status", "recording": self.handle is not None,
-                "source": "simulated", "sample_rate_hz": 50,
+        return {"type": "status", "phase": self.phase,
+                "recording": self.phase == "recording", "source": "simulated",
+                "sensor_model": "simulated_imu", "sample_rate_hz": SAMPLE_RATE_HZ,
+                "countdown_remaining": self.countdown_remaining,
                 "metadata": self.metadata, "recorded_samples": self.count,
-                "file": self.filename, "error": self.error}
+                "file": self.filename, "metadata_file": self.sidecar,
+                "error": self.error}
+
+    @staticmethod
+    def enqueue(queue, message):
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(message)
 
     def publish(self, message):
-        # Bound each client's backlog; a slow viewer cannot stall acquisition.
         for queue in self.clients:
-            if queue.full():
-                queue.get_nowait()
-            queue.put_nowait(message)
+            self.enqueue(queue, message)
 
-    def start(self, metadata: Trial):
-        if self.handle is not None:
-            raise ValueError("A recording is already active. Stop it first.")
-        self.directory.mkdir(parents=True, exist_ok=True)
-        filename = f"trial-{uuid4().hex}.csv"
-        handle = (self.directory / filename).open("x", newline="", encoding="utf-8")
-        writer = csv.writer(handle)
+    def write_sidecar(self, info):
+        # Replace atomically so a failed update does not destroy the last good metadata.
+        path = self.directory / self.sidecar
+        tmp = path.with_suffix('.json.tmp')
         try:
-            writer.writerow(["participant", "session", "gesture", "trial", "source",
-                             "sequence", "timestamp_ms", "ax", "ay", "az", "gx", "gy", "gz"])
+            tmp.write_text(json.dumps(info, indent=2) + '\n', encoding='utf-8')
+            os.replace(tmp, path)
+        finally:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+    def start(self, command: StartCommand):
+        if self.phase != "idle":
+            raise ValueError("Finish the current trial or review it before starting another.")
+        # Catch invalid/unwritable destination before the countdown begins.
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.metadata = command.metadata.model_dump()
+        self.filename = self.sidecar = None
+        self.count, self.error = 0, None
+        self.phase = "countdown"
+        self.countdown_remaining = command.countdown_seconds
+        self.publish(self.status())
+        self.countdown_task = asyncio.create_task(self.countdown(command.countdown_seconds))
+
+    async def countdown(self, seconds):
+        try:
+            for remaining in range(seconds, 0, -1):
+                self.countdown_remaining = remaining
+                self.publish(self.status())
+                await asyncio.sleep(1)
+            self.begin_recording()
+        except asyncio.CancelledError:
+            raise
+        except OSError:
+            self.phase, self.countdown_remaining = "idle", None
+            self.error = "Cannot start recording; check directory permissions and disk space."
+            self.publish(self.status())
+        finally:
+            if self.countdown_task is asyncio.current_task():
+                self.countdown_task = None
+
+    def begin_recording(self):
+        stem = f"trial-{uuid4().hex}"
+        self.filename, self.sidecar = stem + '.csv', stem + '.json'
+        path = self.directory / self.filename
+        handle = path.open('x', newline='', encoding='utf-8')
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        info = {"schema_version": 1, "csv_file": self.filename, **self.metadata,
+                "sensor_model": "simulated_imu", "source": "simulated",
+                "sampling_rate_hz": SAMPLE_RATE_HZ, "sampling_rate_type": "nominal",
+                "timestamp_clock": "host Unix time", "timestamp_unit": "ns",
+                "acceleration_unit": "m/s^2", "angular_velocity_unit": "rad/s",
+                "sequence_number_scope": "per trial, starting at zero",
+                "review_status": "recording", "recorded_samples": 0}
+        try:
+            writer.writeheader()
             handle.flush()
+            self.write_sidecar(info)
         except OSError:
             handle.close()
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+            self.filename = self.sidecar = None
             raise
-        self.filename, self.metadata = filename, metadata.model_dump()
-        self.handle, self.writer, self.count, self.error = handle, writer, 0, None
+        self.handle, self.writer, self.trial_info = handle, writer, info
+        self.phase, self.countdown_remaining = "recording", None
         self.publish(self.status())
 
-    def stop(self):
-        if self.handle is not None:
-            try:
-                self.handle.close()
-            finally:
-                self.handle = self.writer = None
+    def stop(self, failed=False):
+        if self.phase == 'countdown':
+            self.countdown_task.cancel()
+            self.phase, self.countdown_remaining = 'idle', None
+            self.publish(self.status())
+            return
+        if self.phase != 'recording':
+            raise ValueError("There is no active recording or countdown.")
+        try:
+            self.handle.close()
+        except OSError:
+            failed = True
+        finally:
+            self.handle = self.writer = None
+        self.phase = 'review'
+        self.trial_info['review_status'] = 'needs_review'
+        self.trial_info['recorded_samples'] = self.count
+        self.trial_info['recording_error'] = bool(failed)
+        if failed:
+            self.error = 'Recording failed. Reject this trial and check disk space and permissions.'
+        try:
+            self.write_sidecar(self.trial_info)
+        except OSError:
+            self.error = 'Could not update metadata. Check disk space and permissions, then review again.'
+        self.publish(self.status())
+
+    def review(self, decision):
+        if self.phase != 'review':
+            raise ValueError('There is no trial awaiting review.')
+        if decision not in ('accepted', 'rejected'):
+            raise ValueError('Review decision must be accepted or rejected.')
+        if decision == 'accepted' and (self.count == 0 or self.trial_info.get('recording_error')):
+            raise ValueError('Cannot accept an empty or failed recording. Reject and repeat it.')
+        info = {**self.trial_info, 'review_status': decision}
+        self.write_sidecar(info)  # only transition when the decision is safely stored
+        self.trial_info = info
+        self.phase, self.error = 'idle', None
         self.publish(self.status())
 
     async def simulate(self):
@@ -81,25 +189,28 @@ class Acquisition:
         while True:
             t = time.monotonic() - started
             self.sequence += 1
+            timestamp_ns = time.time_ns()
             sample = {"type": "sample", "source": "simulated", "sequence": self.sequence,
-                      "timestamp_ms": time.time_ns() // 1_000_000,
+                      # String prevents JavaScript from rounding 19-digit timestamps.
+                      "timestamp_ns": str(timestamp_ns),
                       "ax": round(math.sin(t * 2), 5), "ay": round(math.cos(t * 1.5), 5),
                       "az": round(9.81 + math.sin(t), 5),
-                      "gx": round(20 * math.sin(t), 5), "gy": round(15 * math.cos(t), 5),
-                      "gz": round(10 * math.sin(t * .5), 5)}
-            if self.handle is not None:
+                      "gx": round(math.radians(20) * math.sin(t), 5),
+                      "gy": round(math.radians(15) * math.cos(t), 5),
+                      "gz": round(math.radians(10) * math.sin(t * .5), 5)}
+            if self.phase == 'recording':
+                row = {key: self.metadata[key] for key in ('participant_id', 'session_id', 'gesture', 'trial_id')}
+                row.update(sensor_model='simulated_imu', timestamp_ns=timestamp_ns, sequence_number=self.count)
+                row.update({key: sample[key] for key in AXES})
                 try:
-                    self.writer.writerow([*self.metadata.values(), "simulated",
-                                          *[sample[k] for k in ("sequence", "timestamp_ms", "ax", "ay", "az", "gx", "gy", "gz")]])
+                    self.writer.writerow(row)
                     self.handle.flush()
                     self.count += 1
                 except OSError:
-                    self.error = "Recording failed: check disk space and directory permissions."
-                    with suppress(OSError):
-                        self.stop()
+                    self.stop(failed=True)
             sample["recorded_samples"] = self.count
             self.publish(sample)
-            await asyncio.sleep(.02)
+            await asyncio.sleep(1 / SAMPLE_RATE_HZ)
 
 
 def create_app(data_dir: Path | None = None):
@@ -112,7 +223,7 @@ def create_app(data_dir: Path | None = None):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        with suppress(OSError):
+        if acquisition.phase in ('countdown', 'recording'):
             acquisition.stop()
 
     app = FastAPI(title="LHNT IMU / EMG foundation", lifespan=lifespan)
@@ -146,17 +257,19 @@ def create_app(data_dir: Path | None = None):
                     if not isinstance(message, dict):
                         raise ValueError("Command must be a JSON object.")
                     if message.get("type") == "start_recording":
-                        acquisition.start(Trial.model_validate(message.get("metadata")))
+                        acquisition.start(StartCommand.model_validate(message))
                     elif message.get("type") == "stop_recording":
                         acquisition.stop()
+                    elif message.get("type") == "review_trial":
+                        acquisition.review(message.get('decision'))
                     elif message.get("type") == "get_status":
-                        queue.put_nowait(acquisition.status())
+                        acquisition.enqueue(queue, acquisition.status())
                     else:
                         raise ValueError("Unknown command.")
                 except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                    queue.put_nowait({"type": "error", "message": str(exc)})
+                    acquisition.enqueue(queue, {"type": "error", "message": str(exc)})
                 except OSError:
-                    queue.put_nowait({"type": "error", "message": "Cannot write recording; check directory permissions and disk space."})
+                    acquisition.enqueue(queue, {"type": "error", "message": "Cannot write recording; check directory permissions and disk space."})
         except WebSocketDisconnect:
             pass
         finally:

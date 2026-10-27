@@ -4,7 +4,19 @@
 <body><main>
 <header><span class="eyebrow">LONGHORN NEUROTECH / ACQUISITION</span><h1>IMU / EMG workspace</h1><p>Prepare a trial. Inspect the stream. Record movement.</p></header>
 <section class="status" aria-live="polite"><span id="connection">Connecting…</span><span id="recording">Recording status unknown</span><span>Source: SIMULATED IMU · ~50 Hz</span></section>
-<div class="layout"><section class="card"><h2>Trial details</h2><form id="trial-form"><fieldset id="metadata"><label>Participant<input id="participant" name="participant" placeholder="P001" maxlength="80" required></label><label>Session<input id="session" name="session" placeholder="S001" maxlength="80" required></label><label>Gesture<input id="gesture" name="gesture" placeholder="Wrist flexion" maxlength="80" required></label><label>Trial<input id="trial" name="trial" type="number" min="1" step="1" value="1" required></label></fieldset><button id="start" type="submit" disabled>Start recording</button><button id="stop" type="button" disabled>Stop recording</button></form><p id="message" role="status">Waiting for backend status.</p><p id="file"></p></section>
-<section class="card"><h2>Live acceleration</h2><p class="legend">X — coral &nbsp; Y — teal &nbsp; Z — blue · m/s²</p><canvas id="plot" width="800" height="260" role="img" aria-label="Live simulated acceleration over the most recent 250 samples"></canvas><h2>Latest sample</h2><div id="values" class="values"></div><p><span id="received">0</span> samples received this connection · <span id="saved">0</span> recorded</p><p class="muted">Gyroscope: °/s · EMG input will be added with the hardware adapter.</p></section></div>
+<div class="layout"><section class="card"><h2>Trial details</h2><form id="trial-form"><fieldset id="metadata">
+<label>Participant ID<input id="participant_id" placeholder="P001" maxlength="80" required></label>
+<label>Session ID<input id="session_id" placeholder="S001" maxlength="80" required></label>
+<label>Gesture<input id="gesture" list="gestures" placeholder="Select or enter a gesture" maxlength="80" required><datalist id="gestures"><option value="forearm raise"><option value="forearm lower"><option value="forearm left"><option value="forearm right"><option value="pronation"><option value="supination"><option value="idle"></datalist></label>
+<label>Trial ID<input id="trial_id" type="number" min="1" step="1" value="1" required></label>
+<label>Countdown (seconds)<input id="countdown_seconds" type="number" min="0" max="30" step="1" value="3" required></label>
+<details><summary>Optional collection notes</summary>
+<label>Mounting location<input id="mounting_location" placeholder="e.g. forearm near wrist" maxlength="200"></label>
+<label>Orientation notes<textarea id="orientation_notes" maxlength="500" placeholder="e.g. X-axis points toward hand"></textarea></label>
+<label>Accelerometer range<input id="accelerometer_range" placeholder="If known; include units" maxlength="100"></label>
+<label>Gyroscope range<input id="gyroscope_range" placeholder="If known; include units" maxlength="100"></label>
+<label>Trial notes<textarea id="trial_notes" maxlength="1000"></textarea></label></details></fieldset>
+<button id="start" type="submit" disabled>Start countdown</button><button id="stop" type="button" disabled>Stop recording</button><div id="review-actions"><button id="accept" type="button" disabled>Accept trial</button><button id="reject" type="button" disabled>Reject / repeat</button></div></form><p id="message" role="status">Waiting for backend status.</p><p id="file"></p></section>
+<section class="card"><h2>Live acceleration</h2><p class="legend">X — coral &nbsp; Y — teal &nbsp; Z — blue · m/s²</p><canvas id="plot" width="800" height="260" role="img" aria-label="Live simulated acceleration over the most recent 250 samples"></canvas><h2>Latest sample</h2><div id="values" class="values"></div><p><span id="received">0</span> samples received this connection · <span id="saved">0</span> recorded</p><p class="muted">Gyroscope: rad/s · EMG input will be added with the hardware adapter.</p></section></div>
 <footer>Local acquisition foundation · Recordings are saved by the backend.</footer>
 </main></body></html>

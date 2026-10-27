@@ -1,13 +1,15 @@
 # IMU / EMG web foundation
 
-Local FastAPI + WebSocket acquisition app for Longhorn Neurotech. No sensor,
-Arduino/ESP32, Node build, or frontend framework is needed. The app generates
-**simulated IMU data** on the backend at approximately 50 Hz and broadcasts it
-through `/ws` to the browser. EMG acquisition is not implemented yet.
+A local FastAPI + WebSocket app for collecting labeled gesture trials. It
+currently produces **simulated IMU data** on the backend at approximately 50 Hz;
+no physical sensor or EMG acquisition is connected yet. Each trial produces a
+CSV of raw samples and a separate JSON metadata file. The proposed data format
+follows the October 19 subteam planning document and remains provisional pending
+agreement with the data and acquisition teams.
 
 ## Setup and run
 
-Use Python **3.10 or newer**. Clone this repository and open a terminal inside it:
+Use Python **3.10 or newer**. Clone the repository and open a terminal inside it:
 
 ```bash
 git clone https://github.com/trishappatil007/IMU_EMG_web.git
@@ -23,7 +25,7 @@ Windows PowerShell:
 .venv\Scripts\Activate.ps1
 ```
 
-Windows Command Prompt (also works if PowerShell blocks activation):
+Windows Command Prompt:
 
 ```bat
 .venv\Scripts\activate.bat
@@ -35,83 +37,113 @@ macOS / Linux (use `python3` above if needed):
 source .venv/bin/activate
 ```
 
-Then, in the activated environment:
+Then run:
 
 ```bash
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://127.0.0.1:8000** in your browser. Leave the terminal running.
-Stop the server with Ctrl+C. If port 8000 is occupied, add `--port 8001` instead
-and open http://127.0.0.1:8001. Run commands from the repository root, not `app/`.
+Open **http://127.0.0.1:8000**. Keep the terminal running; stop the server with
+Ctrl+C. If port 8000 is occupied, use `--port 8001` and open port 8001 instead.
+Run commands from the repository root. Existing users can run `git pull` first.
 
-## Try a complete trial
+## Collect a simulated trial
 
-1. Confirm **Connected**, **Idle**, and **SIMULATED IMU** appear. The plot and
-   sample counter should update immediately, before recording starts.
-2. Enter participant `P001`, session `S001`, gesture `wrist flexion`, trial `1`.
-3. Click **Start recording**. Wait for the backend-confirmed **Recording** state
-   and increasing recorded-sample count. Metadata is locked during recording.
-4. Click **Stop recording**. Confirm **Idle**. Find the displayed CSV filename
-   in the server's `recordings/` directory.
-5. Open the CSV: it contains metadata, source, sequence, Unix timestamp in
-   milliseconds, acceleration `ax/ay/az` in m/s², and gyro `gx/gy/gz` in °/s.
+1. Confirm the page shows **Connected** and **Idle** and the live plot updates.
+2. Enter participant and session IDs, a gesture, and a trial number. Suggested
+   gestures are provided, but other labels can be entered while the team decides.
+3. Optionally enter mounting location, orientation, sensor ranges, and notes.
+   Leave unknown sensor settings blank; do not enter guesses as measurements.
+4. Set the countdown (0–30 seconds; default 3 is a UI convenience, not an agreed
+   experimental protocol). Click **Start countdown**, take the starting pose, and
+   perform the gesture once recording begins. Cancel during countdown if needed.
+5. Click **Stop recording** when finished. The trial remains in review until you
+   select **Accept trial** or **Reject / repeat**. Both preserve the CSV and its
+   review status; rejecting does not delete data. For a repeat, use the retained
+   details and start again. Every attempt gets a unique filename, including when
+   you use the same trial ID. Change the trial number manually for a new repetition.
 
-Every recording creates a unique file, so repeated trial labels cannot overwrite
-prior recordings. Files are flushed each sample and excluded from git. To change
-the output location, set `IMU_DATA_DIR` before starting Uvicorn. The directory is
-created on the first recording. Avoid using identifying names for participants.
+Files are stored in `recordings/` on the machine running the backend, excluded
+from Git. Set `IMU_DATA_DIR` before starting the server to use a different
+location. The page shows the filenames, not a download link. Use participant
+codes rather than names. Do not collect real participant data until the team has
+agreed on its collection, storage, and review procedures.
 
-## Architecture and protocol
+## CSV schema
 
-- `app/main.py`: FastAPI app, validated trial metadata, simulator, CSV writer,
-  shared recording state, and bounded per-viewer WebSocket queues.
-- `app/static/`: browser form, live plot, connection/recording status, reconnect.
-- `tests/test_app.py`: stream, validation, recordings, reconnect, multiple viewers.
-- `GET /health`: current backend status; `GET /docs`: generated HTTP API docs.
-- `WS /ws`: bidirectional commands and streaming events.
+One row is one sample; one CSV is one trial attempt. Exact column order:
 
-Browser → backend commands:
+```text
+participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,ax,ay,az,gx,gy,gz
+```
+
+- `sensor_model` is `simulated_imu` while using the simulator.
+- `timestamp_ns` is generated by the **host** using Unix time in nanoseconds.
+  Its unit is nanoseconds, but clock accuracy/resolution is platform-dependent;
+  it is not a hardware timestamp. On the WebSocket it is a string to avoid
+  JavaScript integer rounding. The CSV contains the full integer.
+- `sequence_number` starts at **0 for each trial** and increments per recorded
+  sample. This provisional convention differs from the live stream's sequence,
+  which runs continuously from backend startup. Confirm the convention with the
+  data team; acquisition-level counters are needed later to detect sensor drops.
+- `ax`, `ay`, `az` are acceleration including gravity, in **m/s²**; `gx`, `gy`,
+  `gz` are angular velocity in **rad/s**. These are synthetic examples only.
+- The simulator targets 50 Hz; actual timing varies. Do not treat nominal rate
+  as measured rate or use generated data as experimental measurements.
+
+Each `trial-<unique-id>.csv` has a corresponding `trial-<unique-id>.json` with
+trial labels, simulator source and model, nominal sample rate, units, timestamp
+clock, sequence scope, optional mounting/orientation/ranges/notes, sample count,
+recording error, and `review_status` (`recording`, `needs_review`, `accepted`, or
+`rejected`). Incomplete fields are empty strings. Filter accepted trials by the
+sidecar when preparing a dataset; filenames are not labels.
+
+When the server is stopped normally during a recording, the CSV is closed and
+its sidecar marked `needs_review`. Review state is currently held in server
+memory and is not restored after server restart. After a restart, inspect and
+review unfinished sidecars manually before using the data. An abrupt crash may
+leave a sidecar marked `recording`; treat it as incomplete. A trial whose write
+failed or contains no samples cannot be accepted through the UI.
+
+## WebSocket protocol
+
+`GET /health` reports current status; `GET /docs` has HTTP API documentation.
+`WS /ws` receives commands and streams events:
 
 ```json
-{"type":"start_recording","metadata":{"participant":"P001","session":"S001","gesture":"flexion","trial":1}}
+{"type":"start_recording","countdown_seconds":3,"metadata":{"participant_id":"P001","session_id":"S001","gesture":"pronation","trial_id":1,"mounting_location":"forearm near wrist","orientation_notes":"X toward hand","accelerometer_range":"","gyroscope_range":"","trial_notes":""}}
 {"type":"stop_recording"}
+{"type":"review_trial","decision":"accepted"}
+{"type":"review_trial","decision":"rejected"}
 {"type":"get_status"}
 ```
 
-Backend → browser events:
+The optional metadata fields may be omitted. Status events contain `phase`
+(`idle`, `countdown`, `recording`, `review`), `countdown_remaining`, trial
+metadata, filenames, sample count, and errors. Sample events contain a continuous
+stream `sequence`, `timestamp_ns` as a string, axes, and `recorded_samples`.
+Invalid commands produce an `error` event. These commands and status phases
+replace the original prototype's `participant`, `session`, and `trial` schema;
+existing old CSVs are not automatically migrated.
 
-```json
-{"type":"sample","source":"simulated","sequence":1,"timestamp_ms":1792964337000,"ax":0.1,"ay":1.0,"az":9.81,"gx":2.0,"gy":15.0,"gz":0.5,"recorded_samples":0}
-{"type":"status","recording":false,"source":"simulated","sample_rate_hz":50,"metadata":null,"recorded_samples":0,"file":null,"error":null}
-{"type":"error","message":"A recording is already active. Stop it first."}
-```
+The server owns one shared trial: all tabs see the same state, and any can
+cancel, stop, or review it. Closing a browser tab does not stop recording.
+Reconnection restores current in-memory state. Slow viewers may skip display
+samples, while recording proceeds separately. Use **one Uvicorn worker**;
+state is in-process. `--reload` restarts and interrupts an active trial. This
+app has no authentication and the documented command binds locally.
 
-Recording is **global to this server**: all tabs see the same trial and any tab can
-stop it. Closing a tab does not stop recording; reconnecting restores backend
-status and active metadata. If the connection is lost, the browser explicitly
-shows recording status as unknown. Stop explicitly before ending a session.
-Server shutdown closes the CSV; a restart starts idle and preserves existing
-files. Slow viewers may skip display samples; CSV recording occurs independently.
+## Future hardware and analysis
 
-Use **one Uvicorn worker**. This foundation uses in-process state, no database or
-cross-worker coordinator. `--reload` is useful during development but resets an
-active recording on a code change. This is a local development app without
-authentication; the documented command binds to your computer only.
-
-## Hardware integration later
-
-Replace `Acquisition.simulate()` with a serial/BLE/network adapter that produces
-the same sample fields, then feeds the shared recording/broadcast path. Keep
-sensor reading separate from the WebSocket request handler. Specify the real
-sensor's units, sampling rate, timestamps, and dropout behavior before replacing
-the simulator; the current nominal 50 Hz signal is for UI testing, not analysis.
-Add EMG channels and their own sample-rate contract once that pipeline is known.
-
-Reference/inspiration: [LonghornNeurotech/GUI](https://github.com/LonghornNeurotech/GUI)
-provides a prior signal-viewing and training/deployment workflow. This project is
-a new web implementation; it does not require or copy its Qt/hardware stack.
+Replace `Acquisition.simulate()` with an adapter that provides actual IMU samples
+and explicitly defines timestamp origin, units, rate, and dropped-sample
+handling. The currently shown sensor is simulated, not an MPU-6050. EMG channels
+and synchronization will need their own agreed schema. Window duration, overlap,
+gesture duration, sensor placement, and sampling rate are not fixed here; the
+data/ML team can create windows from accepted raw trials after piloting. The
+[LonghornNeurotech GUI](https://github.com/LonghornNeurotech/GUI) was a reference
+for the broader signal-viewing workflow.
 
 ## Tests
 
@@ -120,6 +152,6 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Automated integration tests check the served page/assets, streamed samples,
-metadata errors, duplicate starts, CSV contents, reconnect behavior, and shared
-state between viewers. Repeat the browser trial steps above after UI changes.
+Integration tests cover CSV fields and units, trial review, repeated trials,
+countdown cancellation, multiple viewers, reconnects, and write failures. For a
+manual UI check, run through the collection steps above and inspect both files.
