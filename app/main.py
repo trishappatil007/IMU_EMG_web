@@ -15,7 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 STATIC = Path(__file__).parent / "static"
-SAMPLE_RATE_HZ = 50  # nominal simulator rate, not a guaranteed measured rate
+SAMPLE_RATE_HZ = 50  # approximate publication rate
+EMG_RATE_HZ = 1000  # nominal simulated samples/second
+EMG_CHANNELS = 4
+EMG_BATCH_SIZE = EMG_RATE_HZ // SAMPLE_RATE_HZ
 CSV_FIELDS = ("participant_id", "session_id", "gesture", "trial_id", "sensor_model",
               "timestamp_ns", "sequence_number", "ax", "ay", "az", "gx", "gy", "gz")
 AXES = ("ax", "ay", "az", "gx", "gy", "gz")
@@ -48,6 +51,9 @@ class Acquisition:
         self.metadata = None
         self.handle = None
         self.writer = None
+        self.emg_handle = self.emg_writer = None
+        self.emg_filename = None
+        self.emg_count = 0
         self.filename = None
         self.sidecar = None
         self.count = 0
@@ -64,6 +70,8 @@ class Acquisition:
                 "sensor_model": "simulated_imu", "sample_rate_hz": SAMPLE_RATE_HZ,
                 "countdown_remaining": self.countdown_remaining,
                 "metadata": self.metadata, "recorded_samples": self.count,
+                "emg_file": self.emg_filename, "emg_recorded_samples": self.emg_count,
+                "emg_sample_rate_hz": EMG_RATE_HZ, "emg_channels": EMG_CHANNELS,
                 "file": self.filename, "metadata_file": self.sidecar,
                 "error": self.error}
 
@@ -94,8 +102,8 @@ class Acquisition:
         # Catch invalid/unwritable destination before the countdown begins.
         self.directory.mkdir(parents=True, exist_ok=True)
         self.metadata = command.metadata.model_dump()
-        self.filename = self.sidecar = None
-        self.count, self.error = 0, None
+        self.filename = self.sidecar = self.emg_filename = None
+        self.count, self.emg_count, self.error = 0, 0, None
         self.phase = "countdown"
         self.countdown_remaining = command.countdown_seconds
         self.publish(self.status())
@@ -120,28 +128,41 @@ class Acquisition:
 
     def begin_recording(self):
         stem = f"trial-{uuid4().hex}"
-        self.filename, self.sidecar = stem + '.csv', stem + '.json'
+        self.filename, self.sidecar, self.emg_filename = stem + '.csv', stem + '.json', stem + '-emg.csv'
         path = self.directory / self.filename
         handle = path.open('x', newline='', encoding='utf-8')
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        emg_handle = None
         info = {"schema_version": 1, "csv_file": self.filename, **self.metadata,
                 "sensor_model": "simulated_imu", "source": "simulated",
                 "sampling_rate_hz": SAMPLE_RATE_HZ, "sampling_rate_type": "nominal",
                 "timestamp_clock": "host Unix time", "timestamp_unit": "ns",
                 "acceleration_unit": "m/s^2", "angular_velocity_unit": "rad/s",
                 "sequence_number_scope": "per trial, starting at zero",
-                "review_status": "recording", "recorded_samples": 0}
+                "review_status": "recording", "recorded_samples": 0,
+                "emg_csv_file": self.emg_filename, "emg_sensor_model": "simulated_emg",
+                "emg_sample_rate_hz": EMG_RATE_HZ, "emg_sample_rate_type": "nominal",
+                "emg_channel_count": EMG_CHANNELS, "emg_unit": "arbitrary simulation units",
+                "emg_timestamps": "synthetic, host-anchored batches", "emg_recorded_samples": 0}
         try:
+            emg_handle = (self.directory / self.emg_filename).open('x', newline='', encoding='utf-8')
+            emg_writer = csv.DictWriter(emg_handle, fieldnames=('participant_id', 'session_id', 'gesture', 'trial_id', 'sensor_model', 'timestamp_ns', 'sequence_number', *(f'emg_{i}' for i in range(1, EMG_CHANNELS + 1))))
             writer.writeheader()
+            emg_writer.writeheader()
             handle.flush()
+            emg_handle.flush()
             self.write_sidecar(info)
         except OSError:
             handle.close()
+            if emg_handle is not None:
+                emg_handle.close()
             with suppress(OSError):
                 path.unlink(missing_ok=True)
-            self.filename = self.sidecar = None
+                (self.directory / self.emg_filename).unlink(missing_ok=True)
+            self.filename = self.sidecar = self.emg_filename = None
             raise
         self.handle, self.writer, self.trial_info = handle, writer, info
+        self.emg_handle, self.emg_writer = emg_handle, emg_writer
         self.phase, self.countdown_remaining = "recording", None
         self.publish(self.status())
 
@@ -159,9 +180,16 @@ class Acquisition:
             failed = True
         finally:
             self.handle = self.writer = None
+        try:
+            self.emg_handle.close()
+        except OSError:
+            failed = True
+        finally:
+            self.emg_handle = self.emg_writer = None
         self.phase = 'review'
         self.trial_info['review_status'] = 'needs_review'
         self.trial_info['recorded_samples'] = self.count
+        self.trial_info['emg_recorded_samples'] = self.emg_count
         self.trial_info['recording_error'] = bool(failed)
         if failed:
             self.error = 'Recording failed. Reject this trial and check disk space and permissions.'
@@ -176,7 +204,7 @@ class Acquisition:
             raise ValueError('There is no trial awaiting review.')
         if decision not in ('accepted', 'rejected'):
             raise ValueError('Review decision must be accepted or rejected.')
-        if decision == 'accepted' and (self.count == 0 or self.trial_info.get('recording_error')):
+        if decision == 'accepted' and (self.count == 0 or self.emg_count == 0 or self.trial_info.get('recording_error')):
             raise ValueError('Cannot accept an empty or failed recording. Reject and repeat it.')
         info = {**self.trial_info, 'review_status': decision}
         self.write_sidecar(info)  # only transition when the decision is safely stored
@@ -186,6 +214,7 @@ class Acquisition:
 
     async def simulate(self):
         started = time.monotonic()
+        emg_sequence = 0
         while True:
             t = time.monotonic() - started
             self.sequence += 1
@@ -198,6 +227,19 @@ class Acquisition:
                       "gx": round(math.radians(20) * math.sin(t), 5),
                       "gy": round(math.radians(15) * math.cos(t), 5),
                       "gz": round(math.radians(10) * math.sin(t * .5), 5)}
+            # Generate batches on a nominal 1 kHz simulation grid. Timestamps are
+            # synthetic within each host-anchored batch, not physical acquisition times.
+            batch = []
+            for i in range(EMG_BATCH_SIZE):
+                sample_time = emg_sequence / EMG_RATE_HZ
+                envelope = .35 + .25 * (1 + math.sin(2 * math.pi * .35 * sample_time))
+                channels = [round(envelope * (math.sin(2 * math.pi * (45 + 13 * ch) * sample_time + ch)
+                            + .4 * math.sin(2 * math.pi * (120 + 17 * ch) * sample_time))
+                            + .18 * math.sin(2 * math.pi * 60 * sample_time), 5)
+                            for ch in range(EMG_CHANNELS)]
+                batch.append({"timestamp_ns": str(timestamp_ns - (EMG_BATCH_SIZE - 1 - i) * 1_000_000),
+                              "values": channels})
+                emg_sequence += 1
             if self.phase == 'recording':
                 row = {key: self.metadata[key] for key in ('participant_id', 'session_id', 'gesture', 'trial_id')}
                 row.update(sensor_model='simulated_imu', timestamp_ns=timestamp_ns, sequence_number=self.count)
@@ -206,10 +248,19 @@ class Acquisition:
                     self.writer.writerow(row)
                     self.handle.flush()
                     self.count += 1
+                    for entry in batch:
+                        emg_row = {key: self.metadata[key] for key in ('participant_id', 'session_id', 'gesture', 'trial_id')}
+                        emg_row.update(sensor_model='simulated_emg', timestamp_ns=entry['timestamp_ns'], sequence_number=self.emg_count)
+                        emg_row.update({f'emg_{i + 1}': value for i, value in enumerate(entry['values'])})
+                        self.emg_writer.writerow(emg_row)
+                        self.emg_count += 1
+                    self.emg_handle.flush()
                 except OSError:
                     self.stop(failed=True)
             sample["recorded_samples"] = self.count
             self.publish(sample)
+            self.publish({"type": "emg_batch", "source": "simulated", "sample_rate_hz": EMG_RATE_HZ,
+                          "first_sequence": emg_sequence - EMG_BATCH_SIZE, "samples": batch})
             await asyncio.sleep(1 / SAMPLE_RATE_HZ)
 
 

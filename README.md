@@ -1,9 +1,10 @@
 # IMU / EMG web foundation
 
 A local FastAPI + WebSocket app for collecting labeled gesture trials. It
-currently produces **simulated IMU data** on the backend at approximately 50 Hz;
-no physical sensor or EMG acquisition is connected yet. Each trial produces a
-CSV of raw samples and a separate JSON metadata file. The proposed data format
+currently produces **simulated IMU and EMG data**; no physical sensors are connected yet.
+The IMU updates at approximately 50 Hz; batches of synthetic EMG use a nominal
+1,000 Hz sample grid with four simulated channels. Each trial produces separate
+raw IMU and EMG CSV files and a JSON metadata file. The proposed data format
 follows the October 19 subteam planning document and remains provisional pending
 agreement with the data and acquisition teams.
 
@@ -50,7 +51,9 @@ Run commands from the repository root. Existing users can run `git pull` first.
 
 ## Collect a simulated trial
 
-1. Confirm the page shows **Connected** and **Idle** and the live plot updates.
+1. Confirm the page shows **Connected** and **Idle** and the live plots update.
+   Select IMU axes and 1–4 EMG channels to display, adjust the vertical ranges
+   and time window, and optionally enable EMG filters or inspect the spectrum.
 2. Enter participant and session IDs, a gesture, and a trial number. Suggested
    gestures are provided, but other labels can be entered while the team decides.
 3. Optionally enter mounting location, orientation, sensor ranges, and notes.
@@ -92,7 +95,17 @@ participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_nu
 - The simulator targets 50 Hz; actual timing varies. Do not treat nominal rate
   as measured rate or use generated data as experimental measurements.
 
-Each `trial-<unique-id>.csv` has a corresponding `trial-<unique-id>.json` with
+Each `trial-<unique-id>.csv` has a corresponding `trial-<unique-id>-emg.csv`
+with `participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,emg_1,emg_2,emg_3,emg_4`.
+EMG is synthetic and values use arbitrary simulation units, **not calibrated
+voltage**. The EMG CSV always saves all four simulated channels; the channel
+selector only affects display. Filters and plotted spectra do not change either
+raw CSV. EMG sequence numbers restart at zero per trial. Simulated EMG batch
+timestamps are backfilled on a 1 ms grid relative to each host batch time; they
+are synthetic, can include host scheduling gaps or overlap, and must not be
+interpreted as precise synchronized hardware acquisition timestamps.
+
+A matching `trial-<unique-id>.json` contains
 trial labels, simulator source and model, nominal sample rate, units, timestamp
 clock, sequence scope, optional mounting/orientation/ranges/notes, sample count,
 recording error, and `review_status` (`recording`, `needs_review`, `accepted`, or
@@ -121,8 +134,7 @@ failed or contains no samples cannot be accepted through the UI.
 
 The optional metadata fields may be omitted. Status events contain `phase`
 (`idle`, `countdown`, `recording`, `review`), `countdown_remaining`, trial
-metadata, filenames, sample count, and errors. Sample events contain a continuous
-stream `sequence`, `timestamp_ns` as a string, axes, and `recorded_samples`.
+metadata, filenames, sample count, and errors. IMU `sample` events contain a continuous stream `sequence`, `timestamp_ns` as a string, axes, and `recorded_samples`. `emg_batch` events contain 20 synthetic samples, each with four channel values and timestamps, a starting stream sequence, and the nominal rate.
 Invalid commands produce an `error` event. These commands and status phases
 replace the original prototype's `participant`, `session`, and `trial` schema;
 existing old CSVs are not automatically migrated.
@@ -138,9 +150,9 @@ app has no authentication and the documented command binds locally.
 
 Replace `Acquisition.simulate()` with an adapter that provides actual IMU samples
 and explicitly defines timestamp origin, units, rate, and dropped-sample
-handling. The currently shown sensor is simulated, not an MPU-6050. EMG channels
-and synchronization will need their own agreed schema. Window duration, overlap,
-gesture duration, sensor placement, and sampling rate are not fixed here; the
+handling. The currently shown sensors are simulated, not physical devices. EMG channels,
+units, rates, timing, and synchronization will need an agreed hardware schema. Window duration, overlap,
+gesture duration, sensor placement, and real sensor sampling rate are not fixed here; the
 data/ML team can create windows from accepted raw trials after piloting. The
 [LonghornNeurotech GUI](https://github.com/LonghornNeurotech/GUI) was a reference
 for the broader signal-viewing workflow.
@@ -152,6 +164,27 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Integration tests cover CSV fields and units, trial review, repeated trials,
+Integration tests cover both CSV files, fields and units, trial review, repeated trials,
 countdown cancellation, multiple viewers, reconnects, and write failures. For a
 manual UI check, run through the collection steps above and inspect both files.
+
+## Display, filtering, and spectrum
+
+The six IMU channels are three accelerometer axes (X/Y/Z) and three gyroscope
+axes (X/Y/Z), not six accelerometer axes. The page lets each be shown or hidden
+and adjusts the time window and separate vertical ranges. The EMG display
+selector shows one through four simulated channels, and the spectrum selector
+chooses one of the four. EMG and IMU remain labeled as simulated.
+
+The optional 20–200 Hz filter is a cascade of second-order high-pass and
+low-pass biquads; the optional 60 Hz notch is a second-order biquad with Q=30.
+Filters are causal and may have startup transients and phase shifts. Changing
+filters or detecting dropped WebSocket batches clears the EMG display history
+and filter state. The spectrum uses a mean-removed, Hann-windowed 256-sample
+DFT (nominal resolution ~3.9 Hz), refreshed about four times per second. It
+shows a one-sided amplitude spectrum of whichever signal (raw or filtered) is
+selected. These visualizations are for simulation and inspection, not a
+validated EMG analysis pipeline. Browser buffers can miss samples; backend files
+are recorded independently. Confirm rates and filters with the hardware and
+data teams before using real data. Run signal math checks with `node
+tests/test_signal.js` if Node.js is available.

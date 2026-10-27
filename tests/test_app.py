@@ -102,3 +102,25 @@ def test_invalid_commands_and_unwritable_directory(tmp_path):
             assert 'Cannot write' in until(ws, 'error')['message']
             assert client.get('/health').json()['phase'] == 'idle'
             assert until(ws, 'sample')['source'] == 'simulated'
+
+
+def test_emg_batch_and_raw_companion_csv(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        with client.websocket_connect('/ws') as ws:
+            until(ws, 'status')
+            batch = until(ws, 'emg_batch')
+            assert batch['source'] == 'simulated' and batch['sample_rate_hz'] == 1000
+            assert len(batch['samples']) == 20 and len(batch['samples'][0]['values']) == 4
+            start(ws)
+            until(ws, 'status', lambda m: m['phase'] == 'recording')
+            until(ws, 'sample', lambda m: m['recorded_samples'] >= 3)
+            ws.send_json({'type': 'stop_recording'})
+            status = until(ws, 'status', lambda m: m['phase'] == 'review')
+            info = json.loads((tmp_path / status['metadata_file']).read_text())
+            with (tmp_path / status['emg_file']).open(newline='') as f:
+                rows = list(csv.DictReader(f))
+            assert len(rows) == info['emg_recorded_samples'] >= 60
+            assert [int(r['sequence_number']) for r in rows] == list(range(len(rows)))
+            assert all(r['sensor_model'] == 'simulated_emg' and r['gesture'] == 'pronation' for r in rows)
+            assert set(('emg_1', 'emg_2', 'emg_3', 'emg_4')).issubset(rows[0])
+            assert info['emg_unit'] == 'arbitrary simulation units'
