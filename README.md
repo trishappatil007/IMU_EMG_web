@@ -1,190 +1,196 @@
-# IMU / EMG web foundation
+# IMU data collection and prediction web app
 
-A local FastAPI + WebSocket app for collecting labeled gesture trials. It
-currently produces **simulated IMU and EMG data**; no physical sensors are connected yet.
-The IMU updates at approximately 50 Hz; batches of synthetic EMG use a nominal
-1,000 Hz sample grid with four simulated channels. Each trial produces separate
-raw IMU and EMG CSV files and a JSON metadata file. The proposed data format
-follows the October 19 subteam planning document and remains provisional pending
-agreement with the data and acquisition teams.
+A laptop-hosted FastAPI/WebSocket prototype for labeled IMU trials. It can run
+with built-in simulated IMU/EMG or receive a device stream (e.g. a Raspberry Pi)
+through a **proposed** WebSocket protocol. Four active forearm gestures and idle
+follow the semester implementation plan. The device protocol, sensor settings and
+validation criteria must be confirmed with the IMU/inference team before real
+participant collection. The Raspberry Pi hardware, sensor driver, and model have
+not yet been verified with this application.
 
-## Setup and run
+## Run the application (Windows)
 
-Use Python **3.10 or newer**. Clone the repository and open a terminal inside it:
-
-```bash
-git clone https://github.com/trishappatil007/IMU_EMG_web.git
-cd IMU_EMG_web
-python -m venv .venv
-```
-
-Activate the environment:
-
-Windows PowerShell:
+Clone this repository, or open your existing copy in VS Code and run `git pull`.
+From the repository folder, create a Python 3.10+ environment once:
 
 ```powershell
-.venv\Scripts\Activate.ps1
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Windows Command Prompt:
+Start the server (reuse the existing environment on later runs):
 
-```bat
-.venv\Scripts\activate.bat
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-macOS / Linux (use `python3` above if needed):
+Open http://127.0.0.1:8000. If port 8000 is in use, replace `8000` with `8001`
+in the command and URL. Stop the server with Ctrl+C. On macOS/Linux use
+`python3 -m venv .venv`, `.venv/bin/python -m pip install -r requirements.txt`,
+and `.venv/bin/python -m uvicorn app.main:app`.
 
-```bash
-source .venv/bin/activate
+## Try collection without hardware
+
+1. In the browser choose **Simulated IMU + EMG**. The Pi status should still say
+   disconnected; browser connection and device connection are different things.
+2. Enter participant and session IDs, choose **forearm raise, forearm lower,
+   pronation, supination, or idle**, and choose a trial number. Optional notes,
+   mounting location, orientation, and sensor ranges are available.
+3. Start the countdown, perform the trial when recording starts, and stop it.
+   The status, elapsed time, and sample count update in the browser.
+4. Accept or reject the trial. Rejected recordings remain on disk for audit but
+   are not valid training examples. To repeat, use the same fields and start a
+   new attempt. Generated filenames are unique and never overwrite each other.
+5. Files are stored on the **server laptop** in `recordings/`, not downloaded in
+   the browser. Each attempt has an IMU CSV and a JSON sidecar. The built-in
+   simulated source also produces a separate simulated EMG CSV. The app does
+   not upload participant data to Git; `recordings/` is ignored.
+
+The default simulator shows an **explicitly simulated** idle prediction with
+example confidence, not an ML model. On the Pi source, only messages from the
+connected device appear as predictions; stale predictions disappear after about
+three seconds. Confidence is the device's reported value, not a calibrated
+probability guarantee. Browser plots and EMG filters are display-only; recordings
+contain raw samples. Actual EMG acquisition is not implemented.
+
+## Simulate the Pi connection
+
+Keep the server running and open a second terminal in the repository folder:
+
+```powershell
+.\.venv\Scripts\python.exe tools\simulated_pi.py --url ws://127.0.0.1:8000/ws/device
 ```
 
-Then run:
+If your server uses port 8001, change the URL to port 8001. In the browser the
+Pi indicator should say **connected / receiving**. Select **Raspberry Pi IMU**.
+The device ID and sensor model identify this client as **simulated**, even
+though it uses the same protocol intended for a Pi. Try a trial and observe the
+start/stop commands printed by the client. Ctrl+C stops the simulated client.
 
-```bash
-python -m pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+For an actual Pi on the same trusted local network, the server must bind to the
+laptop's network interface, e.g. `--host 0.0.0.0`, and the producer would connect
+to `ws://LAPTOP_IP:8000/ws/device`. This prototype has **no authentication or
+transport encryption**, so use only a trusted isolated network; do not expose it
+to the public internet. Keep participant IDs pseudonymous and follow your team's
+storage practices. Browsers can connect to the laptop using its LAN address.
 
-Open **http://127.0.0.1:8000**. Keep the terminal running; stop the server with
-Ctrl+C. If port 8000 is occupied, use `--port 8001` and open port 8001 instead.
-Run commands from the repository root. Existing users can run `git pull` first.
+## Provisional device protocol
 
-## Collect a simulated trial
-
-1. Confirm the page shows **Connected** and **Idle** and the live plots update.
-   Select IMU axes and 1–4 EMG channels to display, adjust the vertical ranges
-   and time window, and optionally enable EMG filters or inspect the spectrum.
-2. Enter participant and session IDs, a gesture, and a trial number. Suggested
-   gestures are provided, but other labels can be entered while the team decides.
-3. Optionally enter mounting location, orientation, sensor ranges, and notes.
-   Leave unknown sensor settings blank; do not enter guesses as measurements.
-4. Set the countdown (0–30 seconds; default 3 is a UI convenience, not an agreed
-   experimental protocol). Click **Start countdown**, take the starting pose, and
-   perform the gesture once recording begins. Cancel during countdown if needed.
-5. Click **Stop recording** when finished. The trial remains in review until you
-   select **Accept trial** or **Reject / repeat**. Both preserve the CSV and its
-   review status; rejecting does not delete data. For a repeat, use the retained
-   details and start again. Every attempt gets a unique filename, including when
-   you use the same trial ID. Change the trial number manually for a new repetition.
-
-Files are stored in `recordings/` on the machine running the backend, excluded
-from Git. Set `IMU_DATA_DIR` before starting the server to use a different
-location. The page shows the filenames, not a download link. Use participant
-codes rather than names. Do not collect real participant data until the team has
-agreed on its collection, storage, and review procedures.
-
-## CSV schema
-
-One row is one sample; one CSV is one trial attempt. Exact column order:
-
-```text
-participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,ax,ay,az,gx,gy,gz
-```
-
-- `sensor_model` is `simulated_imu` while using the simulator.
-- `timestamp_ns` is generated by the **host** using Unix time in nanoseconds.
-  Its unit is nanoseconds, but clock accuracy/resolution is platform-dependent;
-  it is not a hardware timestamp. On the WebSocket it is a string to avoid
-  JavaScript integer rounding. The CSV contains the full integer.
-- `sequence_number` starts at **0 for each trial** and increments per recorded
-  sample. This provisional convention differs from the live stream's sequence,
-  which runs continuously from backend startup. Confirm the convention with the
-  data team; acquisition-level counters are needed later to detect sensor drops.
-- `ax`, `ay`, `az` are acceleration including gravity, in **m/s²**; `gx`, `gy`,
-  `gz` are angular velocity in **rad/s**. These are synthetic examples only.
-- The simulator targets 50 Hz; actual timing varies. Do not treat nominal rate
-  as measured rate or use generated data as experimental measurements.
-
-Each `trial-<unique-id>.csv` has a corresponding `trial-<unique-id>-emg.csv`
-with `participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,emg_1,emg_2,emg_3,emg_4`.
-EMG is synthetic and values use arbitrary simulation units, **not calibrated
-voltage**. The EMG CSV always saves all four simulated channels; the channel
-selector only affects display. Filters and plotted spectra do not change either
-raw CSV. EMG sequence numbers restart at zero per trial. Simulated EMG batch
-timestamps are backfilled on a 1 ms grid relative to each host batch time; they
-are synthetic, can include host scheduling gaps or overlap, and must not be
-interpreted as precise synchronized hardware acquisition timestamps.
-
-A matching `trial-<unique-id>.json` contains
-trial labels, simulator source and model, nominal sample rate, units, timestamp
-clock, sequence scope, optional mounting/orientation/ranges/notes, sample count,
-recording error, and `review_status` (`recording`, `needs_review`, `accepted`, or
-`rejected`). Incomplete fields are empty strings. Filter accepted trials by the
-sidecar when preparing a dataset; filenames are not labels.
-
-When the server is stopped normally during a recording, the CSV is closed and
-its sidecar marked `needs_review`. Review state is currently held in server
-memory and is not restored after server restart. After a restart, inspect and
-review unfinished sidecars manually before using the data. An abrupt crash may
-leave a sidecar marked `recording`; treat it as incomplete. A trial whose write
-failed or contains no samples cannot be accepted through the UI.
-
-## WebSocket protocol
-
-`GET /health` reports current status; `GET /docs` has HTTP API documentation.
-`WS /ws` receives commands and streams events:
+Only one device WebSocket is supported. The sensor process connects to
+`/ws/device` and sends this first:
 
 ```json
-{"type":"start_recording","countdown_seconds":3,"metadata":{"participant_id":"P001","session_id":"S001","gesture":"pronation","trial_id":1,"mounting_location":"forearm near wrist","orientation_notes":"X toward hand","accelerometer_range":"","gyroscope_range":"","trial_notes":""}}
-{"type":"stop_recording"}
-{"type":"review_trial","decision":"accepted"}
-{"type":"review_trial","decision":"rejected"}
-{"type":"get_status"}
+{"type":"hello","device_id":"pi-01","sensor_model":"LSM6DSO32","sample_rate_hz":100,"acceleration_unit":"m/s^2","angular_velocity_unit":"rad/s","timestamp_clock":"device monotonic"}
 ```
 
-The optional metadata fields may be omitted. Status events contain `phase`
-(`idle`, `countdown`, `recording`, `review`), `countdown_remaining`, trial
-metadata, filenames, sample count, and errors. IMU `sample` events contain a continuous stream `sequence`, `timestamp_ns` as a string, axes, and `recorded_samples`. `emg_batch` events contain 20 synthetic samples, each with four channel values and timestamps, a starting stream sequence, and the nominal rate.
-Invalid commands produce an `error` event. These commands and status phases
-replace the original prototype's `participant`, `session`, and `trial` schema;
-existing old CSVs are not automatically migrated.
+The backend responds with `hello_ack`. The device sends sample messages:
 
-The server owns one shared trial: all tabs see the same state, and any can
-cancel, stop, or review it. Closing a browser tab does not stop recording.
-Reconnection restores current in-memory state. Slow viewers may skip display
-samples, while recording proceeds separately. Use **one Uvicorn worker**;
-state is in-process. `--reload` restarts and interrupts an active trial. This
-app has no authentication and the documented command binds locally.
-
-## Future hardware and analysis
-
-Replace `Acquisition.simulate()` with an adapter that provides actual IMU samples
-and explicitly defines timestamp origin, units, rate, and dropped-sample
-handling. The currently shown sensors are simulated, not physical devices. EMG channels,
-units, rates, timing, and synchronization will need an agreed hardware schema. Window duration, overlap,
-gesture duration, sensor placement, and real sensor sampling rate are not fixed here; the
-data/ML team can create windows from accepted raw trials after piloting. The
-[LonghornNeurotech GUI](https://github.com/LonghornNeurotech/GUI) was a reference
-for the broader signal-viewing workflow.
-
-## Tests
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
+```json
+{"type":"sample","timestamp_ns":1000000000,"sequence_number":0,"ax":0.1,"ay":0.2,"az":9.81,"gx":0.01,"gy":0.02,"gz":0.03}
 ```
 
-Integration tests cover both CSV files, fields and units, trial review, repeated trials,
-countdown cancellation, multiple viewers, reconnects, and write failures. For a
-manual UI check, run through the collection steps above and inspect both files.
+`timestamp_ns` and `sequence_number` are nonnegative **JSON integers** from the
+producer; document the actual clock domain. The backend preserves them in the
+CSV. A monotonically increasing sequence counter **must increment by one across
+the device stream**, including between trials. A gap, duplicate, out-of-order
+sample, malformed message, device disconnect, or ~3 second sample timeout
+interrupts an active Pi trial and marks its sidecar `invalid`. It cannot be
+accepted in the UI. For batching use:
 
-## Display, filtering, and spectrum
+```json
+{"type":"sample_batch","samples":[{"timestamp_ns":1000000000,"sequence_number":0,"ax":0.1,"ay":0.2,"az":9.81,"gx":0.01,"gy":0.02,"gz":0.03}]}
+```
 
-The six IMU channels are three accelerometer axes (X/Y/Z) and three gyroscope
-axes (X/Y/Z), not six accelerometer axes. The page lets each be shown or hidden
-and adjusts the time window and separate vertical ranges. The EMG display
-selector shows one through four simulated channels, and the spectrum selector
-chooses one of the four. EMG and IMU remain labeled as simulated.
+Batches contain 1–500 samples; each entry omits `type`. All entries are
+validated before processing. `timestamp_ns` may be either Unix or monotonic time
+as declared in `hello`—do not assume two devices share a clock.
 
-The optional 20–200 Hz filter is a cascade of second-order high-pass and
-low-pass biquads; the optional 60 Hz notch is a second-order biquad with Q=30.
-Filters are causal and may have startup transients and phase shifts. Changing
-filters or detecting dropped WebSocket batches clears the EMG display history
-and filter state. The spectrum uses a mean-removed, Hann-windowed 256-sample
-DFT (nominal resolution ~3.9 Hz), refreshed about four times per second. It
-shows a one-sided amplitude spectrum of whichever signal (raw or filtered) is
-selected. These visualizations are for simulation and inspection, not a
-validated EMG analysis pipeline. Browser buffers can miss samples; backend files
-are recorded independently. Confirm rates and filters with the hardware and
-data teams before using real data. Run signal math checks with `node
-tests/test_signal.js` if Node.js is available.
+The producer can send inference or errors:
+
+```json
+{"type":"prediction","gesture":"pronation","confidence":0.82}
+{"type":"error","message":"Sensor read failed"}
+```
+
+Predictions must use one of the five labels and confidence in [0,1]. Invalid
+messages receive an error response. During a trial invalid messages mark the
+trial invalid. A device that loses its socket is reported as disconnected.
+When recording begins/ends the backend sends the device
+`{"type":"start_recording","metadata":{...}}` and
+`{"type":"stop_recording"}`. The device is expected to stream continuously;
+these commands are notifications and **are not acknowledged or verified yet**.
+The Pi client must implement its own acquisition queue and handle backpressure.
+The prototype does not yet guarantee lossless operation under load.
+
+The browser uses `/ws` with `set_source`, `start_recording`, `stop_recording`,
+`review_trial`, and `get_status` messages. `GET /health` gives current state.
+The backend records device data before publishing it to browser queues; slow
+browser viewers can skip samples without intentionally dropping recorded data.
+A sample rate reported in the hello is nominal; it is not measured by the app.
+
+## Files and trial validity
+
+IMU CSV columns are
+`participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,ax,ay,az,gx,gy,gz`.
+Pi records preserve the producer's counter and timestamps. Built-in simulator
+records use a trial-local sequence starting at 0 and host Unix nanoseconds.
+Acceleration is m/s² (including gravity) and angular velocity is rad/s.
+
+The JSON sidecar records metadata, nominal sample rate, clock description,
+units, source, sample counts, and `review_status` (`recording`, `needs_review`,
+`accepted`, `rejected`, or `invalid`). Train only on **accepted** recordings;
+never treat missing/unreadable sidecars as accepted. Pi recordings are IMU-only.
+Built-in simulated recordings include a companion `-emg.csv` with four
+arbitrary-unit synthetic channels, not calibrated voltage. EMG timestamps are
+synthetic host-anchored batches and are not synchronized sensor timestamps.
+
+Stopping a trial normally leaves it `needs_review`. Pi disconnects, malformed
+messages, sequence gaps, timeouts, or write failures mark an active trial
+`invalid`. A normal server shutdown while recording also marks it invalid. On
+restart, sidecars left in `recording` state are marked invalid where writable;
+review any unreadable metadata manually. Review state itself is not restored in
+the UI after restart. Browser disconnects alone do not stop a backend trial.
+
+Use one Uvicorn worker; state is in memory. Switching sources or starting a new
+trial is blocked until the current trial is stopped and reviewed. A new attempt
+gets a unique filename even if its labels match an earlier trial; operators must
+track trial IDs and acceptance decisions. Set `IMU_DATA_DIR` to change the
+output folder. Logs/recordings remain on the backend machine.
+
+## Signal display and limitations
+
+The six IMU channels are acceleration X/Y/Z and gyroscope X/Y/Z. Axis selection,
+vertical scales and time window affect display. The time-window plot currently
+uses the reported nominal rate and a fixed sample buffer; it is a visualization,
+not a precise measurement of irregular arrival timing. Built-in simulation also
+has 1–4 selectable EMG channels, a 20–200 Hz bandpass, a 60 Hz notch, and a
+256-sample Hann-windowed spectrum; the filters and spectrum use a nominal 1 kHz
+synthetic stream. The Pi source hides the simulated EMG panel. These tools are
+not validated processing for real sensors or clinical use.
+
+## Verification and outstanding integration
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
+node tests/test_signal.js
+```
+
+Tests cover ten sequential simulated recordings, CSV metadata, no overwritten
+filenames, Pi sample/prediction messages, disconnects, sequence gaps, malformed
+messages, invalid trials, and interrupted-sidecar recovery. Node is only needed
+for the optional browser signal-math test. Tests are simulation-based; they do
+not demonstrate real Pi/LSM6DSO32 integration, model accuracy, or the plan's
+10-minute/<1% dropped-sample criterion. File browsing/export, prediction
+staleness requirements, command acknowledgments, hardware queue sizing,
+sampling-rate verification and exact protocol remain work with the other team.
+
+| Failure mode | Current response / limitation |
+| --- | --- |
+| Pi disconnect, sample gap, or timeout during recording | Trial marked invalid; device status shown; reconnect and repeat. |
+| Malformed Pi message | Error returned; an active Pi trial is marked invalid. |
+| Browser disconnect | Backend continues; reconnect to see in-memory trial status. |
+| Crash or file-write failure | Sidecar invalidated on recovery where possible; never assume missing sidecars are valid. |
+| Duplicate labels | Unique filenames avoid overwrite, but the operator must manage trial numbers. |
+| Wrong sensor units, timestamp clock, sample rate, or physical placement | Not automatically detectable; confirm the device contract and pilot recordings. |
+| Slow disk/network at acquisition rate | Lossless acquisition not established; validate with the real Pi and sequence checks. |
