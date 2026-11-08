@@ -194,3 +194,35 @@ sampling-rate verification and exact protocol remain work with the other team.
 | Duplicate labels | Unique filenames avoid overwrite, but the operator must manage trial numbers. |
 | Wrong sensor units, timestamp clock, sample rate, or physical placement | Not automatically detectable; confirm the device contract and pilot recordings. |
 | Slow disk/network at acquisition rate | Lossless acquisition not established; validate with the real Pi and sequence checks. |
+
+## EMG quality review
+
+After stopping a built-in simulated trial, the trial review panel shows per-channel
+quality dots and an assessment of the **saved, raw EMG CSV**. Inspired by the
+channel-quality display in the original Longhorn Neurotech GUI, it provides:
+
+- File/row-count, sequence-number and timestamp-presence checks, plus finite
+  values for all four recorded channels. These do not check timing regularity.
+- Provisional sample-count and near-flatline checks for the simulator. The
+  simulator-v1 thresholds are 500 samples and standard deviation below 0.01 in
+  **arbitrary simulation units**. They are demonstration settings, not values
+  established for physical EMG or for any particular gesture.
+- Per-channel standard deviation, RMS and range, and an explicit statement that
+  clipping is **not assessed** because ADC range/rails are unknown. These
+  numbers do not establish electrode contact or gesture correctness.
+
+Each result is `pass`, `review`, or `not assessed`. A pass means only that the
+implemented provisional checks passed; it does not certify the data or the
+sensor. At acceptance, the server rechecks the saved file. Flagged flatline or
+short recordings can be accepted only with a written override reason, recorded
+in the metadata; missing/corrupted data cannot be accepted even with an override.
+Rejected attempts are kept and labeled. The report and any override are stored
+in the trial's JSON sidecar. Data should only be used after human review.
+
+**The Pi interface currently records IMU only.** Its review says EMG not
+collected; it does not run EMG checks or block approval of an IMU-only trial.
+Physical EMG integration needs actual sensor units, channels, rates, clipping
+limits, thresholds, and an agreed signal-quality protocol. `app/emg_quality.py`
+is separated from the GUI so a future adapter can supply device-specific
+configuration; without one flatline and minimum thresholds are not assessed.
+The prior GUI's EEG thresholds should not be copied directly onto EMG.

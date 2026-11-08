@@ -42,6 +42,8 @@ function connect() {
       $('saved').textContent = data.recorded_samples;
       const messages = {idle:'Ready. Fill in trial details to begin.', countdown:'Get into the starting pose.', recording:'Recording on the backend. Stop when the trial is complete.', review:'Accept this trial or reject it and repeat with the same details.'};
       $('message').textContent = data.error || messages[phase];
+      if (phase === 'review') renderQuality(data.emg_quality);
+      if (phase === 'countdown') $('override-reason').value = '';
       $('file').textContent = data.file ? `Backend files: ${[data.file, data.emg_file, data.metadata_file].filter(Boolean).join(', ')}` : '';
       if (phase !== 'idle' && data.metadata) metadataFields.forEach(key => { $(key).value = data.metadata[key] ?? ''; });
       controls();
@@ -66,6 +68,27 @@ function connect() {
   socket.onclose = () => { ready = false; pending = false; controls(); $('connection').textContent = 'Disconnected · retrying…'; $('recording').textContent = 'Recording status unknown'; $('message').textContent = 'Connection lost. An active backend trial continues; reconnect to check it.'; setTimeout(connect, 1500); };
   socket.onerror = () => socket.close();
 }
+function renderQuality(report) {
+  const checks=$('quality-checks'), channels=$('quality-channels');
+  checks.replaceChildren(); channels.replaceChildren();
+  if (!report) { $('quality-summary').textContent='Quality report unavailable.'; $('override-label').hidden=false; return; }
+  const label = {pass:'Provisional checks passed', review:'Needs review', 'not assessed':'Not assessed', 'not collected':'EMG not collected'}[report.status] || 'Not assessed';
+  $('quality-summary').textContent = `${label}${report.config ? ` · ${report.config.name} · ${report.config.units}` : ''}`;
+  $('quality-summary').className = `quality-summary-${report.status.replaceAll(' ', '-')}`;
+  const addRow = (container, item, name, detail) => {
+    const row=document.createElement('div'), dot=document.createElement('span'), text=document.createElement('span');
+    row.className='quality-row'; dot.className=`quality-dot quality-dot-${item.status.replaceAll(' ', '-')}`; dot.setAttribute('aria-hidden','true');
+    text.textContent=`${name}: ${item.status.toUpperCase()} — ${detail}`;
+    row.append(dot,text);container.append(row);
+  };
+  (report.checks || []).forEach(check=>addRow(checks,check,check.name,check.detail));
+  (report.channels || []).forEach(ch=>{
+    const metrics = ch.std === null ? '' : ` SD ${ch.std.toFixed(4)}, RMS ${ch.rms.toFixed(4)}`;
+    addRow(channels,ch,ch.channel,ch.detail+metrics);
+  });
+  $('quality-limitations').textContent=(report.limitations || []).join(' ');
+  $('override-label').hidden = !['review','not assessed'].includes(report.status);
+}
 function showPrediction(data) { $('prediction').textContent = `Prediction: ${data.gesture} · ${(data.confidence * 100).toFixed(1)}% (${data.source}${data.device_id ? ` / ${data.device_id}` : ""})`; }
 function command(payload) { if (!ready || socket.readyState !== WebSocket.OPEN) return; pending = true; controls(); socket.send(JSON.stringify(payload)); }
 $('trial-form').onsubmit = event => {
@@ -75,7 +98,7 @@ $('trial-form').onsubmit = event => {
 };
 $('source_select').onchange = () => command({type:'set_source', source:$('source_select').value});
 $('stop').onclick = () => command({type:'stop_recording'});
-$('accept').onclick = () => command({type:'review_trial', decision:'accepted'});
+$('accept').onclick = () => command({type:'review_trial', decision:'accepted', override_reason:$('override-reason').value.trim()});
 $('reject').onclick = () => command({type:'review_trial', decision:'rejected'});
 function positive(id, fallback) { const n=Number($(id).value); return Number.isFinite(n) && n>0 ? n : fallback; }
 function drawLines(id, lines, limit, span, units, seconds) {

@@ -14,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from app.emg_quality import assess_emg_csv, SIM_CONFIG
 
 STATIC = Path(__file__).parent / "static"
 SAMPLE_RATE_HZ = 50  # approximate publication rate
@@ -103,6 +104,7 @@ class Acquisition:
         self.recording_started = None
         self.prediction = None
         self.prediction_at = None
+        self.emg_quality = None
 
     def status(self):
         return {"type": "status", "phase": self.phase,
@@ -114,6 +116,7 @@ class Acquisition:
                 "sample_rate_hz": self.device['sample_rate_hz'] if self.source == 'pi' and self.device else SAMPLE_RATE_HZ,
                 "elapsed_seconds": time.monotonic() - self.recording_started if self.phase == 'recording' and self.recording_started else 0,
                 "prediction": self.prediction if self.prediction_at is not None and time.monotonic() - self.prediction_at < 3 else None,
+                "emg_quality": self.emg_quality,
                 "countdown_remaining": self.countdown_remaining,
                 "metadata": self.metadata, "recorded_samples": self.count,
                 "emg_file": self.emg_filename, "emg_recorded_samples": self.emg_count,
@@ -168,6 +171,7 @@ class Acquisition:
         self.metadata = command.metadata.model_dump()
         self.filename = self.sidecar = self.emg_filename = None
         self.count, self.emg_count, self.error = 0, 0, None
+        self.emg_quality = None
         self.phase = "countdown"
         self.countdown_remaining = command.countdown_seconds
         self.publish(self.status())
@@ -282,6 +286,14 @@ class Acquisition:
         self.trial_info['recorded_samples'] = self.count
         self.trial_info['emg_recorded_samples'] = self.emg_count
         self.trial_info['recording_error'] = bool(failed)
+        if self.emg_filename:
+            self.emg_quality = assess_emg_csv(self.directory / self.emg_filename, EMG_CHANNELS,
+                                              self.emg_count, SIM_CONFIG)
+            self.trial_info['emg_quality'] = self.emg_quality
+        else:
+            self.emg_quality = {'status': 'not collected', 'channels': [], 'checks': [],
+                                'limitations': ['This IMU-only source did not record EMG.']}
+            self.trial_info['emg_quality'] = self.emg_quality
         if failed:
             self.error = 'Recording failed. Reject this trial and check disk space and permissions.'
         try:
@@ -290,14 +302,29 @@ class Acquisition:
             self.error = 'Could not update metadata. Check disk space and permissions, then review again.'
         self.publish(self.status())
 
-    def review(self, decision):
+    def review(self, decision, override_reason=""):
         if self.phase != 'review':
             raise ValueError('There is no trial awaiting review.')
         if decision not in ('accepted', 'rejected'):
             raise ValueError('Review decision must be accepted or rejected.')
         if decision == 'accepted' and (self.count == 0 or (self.source == 'simulated' and self.emg_count == 0) or self.trial_info.get('recording_error')):
             raise ValueError('Cannot accept an empty or failed recording. Reject and repeat it.')
+        if not isinstance(override_reason, str) or len(override_reason) > 1000:
+            raise ValueError('Override reason must be text of at most 1000 characters.')
+        # Recheck the actual saved raw file at acceptance, not just the live plot.
+        if decision == 'accepted' and self.emg_filename:
+            self.emg_quality = assess_emg_csv(self.directory / self.emg_filename, EMG_CHANNELS,
+                                              self.emg_count, SIM_CONFIG)
+            self.trial_info['emg_quality'] = self.emg_quality
+            if not self.emg_quality.get('data_integrity'):
+                self.publish(self.status())
+                raise ValueError('EMG data are missing or corrupt. Reject this trial and repeat it.')
+            if self.emg_quality['status'] != 'pass' and not override_reason.strip():
+                self.publish(self.status())
+                raise ValueError('EMG checks need review. Enter a reason to accept anyway, or reject the trial.')
         info = {**self.trial_info, 'review_status': ('invalid' if self.trial_info.get('recording_error') else decision)}
+        if decision == 'accepted' and self.emg_filename and self.emg_quality['status'] != 'pass':
+            info['emg_quality_override_reason'] = override_reason.strip()
         self.write_sidecar(info)  # only transition when the decision is safely stored
         self.trial_info = info
         self.phase, self.error = 'idle', None
@@ -468,7 +495,7 @@ def create_app(data_dir: Path | None = None):
                     elif message.get("type") == "stop_recording":
                         acquisition.stop()
                     elif message.get("type") == "review_trial":
-                        acquisition.review(message.get('decision'))
+                        acquisition.review(message.get('decision'), message.get('override_reason', ''))
                     elif message.get("type") == "get_status":
                         acquisition.enqueue(queue, acquisition.status())
                     else:

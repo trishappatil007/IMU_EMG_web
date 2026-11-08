@@ -54,7 +54,7 @@ def test_schema_recording_review_and_reconnection(tmp_path):
             assert info['recorded_samples'] == len(rows)
             start(ws)
             assert 'review' in until(ws, 'error')['message']
-            ws.send_json({'type': 'review_trial', 'decision': 'accepted'})
+            ws.send_json({'type': 'review_trial', 'decision': 'accepted', 'override_reason': 'Short simulator test'})
             assert until(ws, 'status', lambda m: m['phase'] == 'idle')['file'] == status['file']
             assert json.loads(sidecar.read_text())['review_status'] == 'accepted'
             start(ws)
@@ -93,7 +93,7 @@ def test_invalid_commands_and_unwritable_directory(tmp_path):
             until(ws, 'status')
             for message in [[], {'type': 'bad'}, {'type': 'start_recording', 'metadata': {}},
                             {'type': 'start_recording', 'countdown_seconds': -1, 'metadata': {}},
-                            {'type': 'review_trial', 'decision': 'accepted'}]:
+                            {'type': 'review_trial', 'decision': 'accepted', 'override_reason': 'Short simulator test'}]:
                 ws.send_json(message)
                 assert until(ws, 'error')['message']
             ws.send_text('{')
@@ -166,7 +166,7 @@ def test_pi_device_recording_prediction_and_disconnect(tmp_path):
                 with (tmp_path/status['file']).open(newline='') as f:
                     rows=list(csv.DictReader(f))
                 assert len(rows)==1 and rows[0]['sequence_number']=='11' and rows[0]['sensor_model']=='test-lsm6dso32'
-                browser.send_json({'type':'review_trial','decision':'accepted'})
+                browser.send_json({'type':'review_trial','decision':'accepted','override_reason':'Short simulator test'})
                 until(browser,'status',lambda m:m['phase']=='idle')
                 assert json.loads((tmp_path/status['metadata_file']).read_text())['review_status']=='accepted'
                 start(browser)
@@ -176,7 +176,7 @@ def test_pi_device_recording_prediction_and_disconnect(tmp_path):
                 until(browser,'sample',lambda m:m['recorded_samples']>=1)
             status=until(browser,'status',lambda m:m['phase']=='review' and not m['device_connected'])
             assert json.loads((tmp_path/status['metadata_file']).read_text())['review_status']=='invalid'
-            browser.send_json({'type':'review_trial','decision':'accepted'})
+            browser.send_json({'type':'review_trial','decision':'accepted','override_reason':'Short simulator test'})
             assert 'Cannot accept' in until(browser,'error')['message']
 
 
@@ -219,7 +219,7 @@ def test_ten_consecutive_unique_accepted_trials(tmp_path):
                 ws.send_json({'type':'stop_recording'})
                 status=until(ws,'status',lambda m:m['phase']=='review')
                 paths.append(status['file'])
-                ws.send_json({'type':'review_trial','decision':'accepted'})
+                ws.send_json({'type':'review_trial','decision':'accepted','override_reason':'Short simulator test'})
                 until(ws,'status',lambda m:m['phase']=='idle')
                 info=json.loads((tmp_path/status['metadata_file']).read_text())
                 assert info['review_status']=='accepted' and info['trial_id']==trial
