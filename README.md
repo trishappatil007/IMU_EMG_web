@@ -36,15 +36,23 @@ and `.venv/bin/python -m uvicorn app.main:app`.
 2. Enter participant and session IDs, choose **forearm raise, forearm lower,
    pronation, supination, or idle**, and choose a trial number. Optional notes,
    mounting location, orientation, and sensor ranges are available.
-3. Start the countdown, perform the trial when recording starts, and stop it.
-   The status, elapsed time, and sample count update in the browser.
-4. Accept or reject the trial. Rejected recordings remain on disk for audit but
-   are not valid training examples. To repeat, use the same fields and start a
-   new attempt. Generated filenames are unique and never overwrite each other.
-5. Files are stored on the **server laptop** in `recordings/`, not downloaded in
-   the browser. Each attempt has an IMU CSV and a JSON sidecar. The built-in
-   simulated source also produces a separate simulated EMG CSV. The app does
-   not upload participant data to Git; `recordings/` is ignored.
+3. Enter a recording duration and requested IMU sample rate. The requested rate
+   must match the rate reported by the active source (the built-in simulator is
+   50 Hz); the app cannot set the hardware's sampling rate. Enter countdown and
+   select an approved-trial destination.
+4. Start the countdown and perform the trial. The backend automatically stops
+   after the selected duration, or the operator may stop earlier. The timer runs
+   on the backend and is approximate, not a hardware-timed acquisition boundary.
+5. Review the IMU integrity and (when present) EMG quality checks. Accept or
+   reject the trial. Accept triggers the chosen local-folder or GitHub export.
+   A failed export leaves the trial in review and allows the destination to be
+   changed and retried. Rejected and interrupted trials remain in the staging
+   folder and are never exported as accepted.
+6. A trial's original files are kept on the server laptop in `recordings/` as a
+   staging/audit copy; accepted files are additionally exported to the chosen
+   destination. The **Data View** tab lists local attempts with download links
+   for the IMU CSV, optional EMG CSV and metadata. Files are excluded from this
+   app's own Git repository by `.gitignore`.
 
 The default simulator shows an **explicitly simulated** idle prediction with
 example confidence, not an ML model. On the Pi source, only messages from the
@@ -73,6 +81,47 @@ to `ws://LAPTOP_IP:8000/ws/device`. This prototype has **no authentication or
 transport encryption**, so use only a trusted isolated network; do not expose it
 to the public internet. Keep participant IDs pseudonymous and follow your team's
 storage practices. Browsers can connect to the laptop using its LAN address.
+
+## Approved-trial destinations
+
+Choose the destination in the Data Collection panel. The destination is used
+**only when the reviewer clicks Accept**; start/stop and rejection do not upload.
+
+- **Local folder:** enter a folder path on the backend computer. Blank uses
+  `recordings/approved/`. All files are copied there after approval; a different
+  existing file is never overwritten. The staging folder is retained. Do not
+  choose the staging folder itself as the destination.
+- **GitHub:** enter an existing `owner/repository`, existing branch, and relative
+  repository folder. Install [GitHub CLI](https://cli.github.com/) on the backend
+  computer and authenticate beforehand with `gh auth login`; `gh auth status`
+  should show the account that has write access. No token is entered in the
+  browser or saved in trial metadata. The backend uses the authenticated `gh`
+  CLI to create one commit containing all files, checking the branch head and
+  refusing to overwrite existing trial filenames. GitHub repository visibility
+  and collaborator permissions determine who can see uploaded recordings.
+
+If GitHub export fails (missing CLI, login, permissions, nonexistent/protected
+branch, network, changed branch, or API limits), the trial stays in review and
+its staging metadata stays unaccepted. Fix the destination or authentication
+and click Accept again. On a timeout, first inspect the target branch: a remote
+commit might have succeeded even though the response was lost. The app will not
+blindly overwrite a same-named remote file. Github CLI and local exports run on
+the backend computer; folder paths aren't paths on a remote phone. Large trials
+are loaded into memory for export and may exceed local memory or GitHub's API
+limits; this prototype has not been validated for large uploads.
+
+The app is local/trusted-network software without authentication. Anyone who can
+access the backend can control trials or trigger an export using its installed
+credentials. Avoid untrusted networks and do not bind it publicly.
+
+## IMU data integrity review
+
+On stop, the application checks the saved IMU CSV for expected row count,
+consecutive sequence values, strictly increasing valid timestamps, and finite
+values for all six axes. The results appear per channel in the review panel and
+are stored in the JSON sidecar. Acceptance rechecks the raw file and refuses a
+missing/corrupt file. This checks data integrity, **not** sensor calibration,
+clipping, actual frequency, movement execution, or physical signal quality.
 
 ## Provisional device protocol
 
@@ -116,14 +165,18 @@ Predictions must use one of the five labels and confidence in [0,1]. Invalid
 messages receive an error response. During a trial invalid messages mark the
 trial invalid. A device that loses its socket is reported as disconnected.
 When recording begins/ends the backend sends the device
-`{"type":"start_recording","metadata":{...}}` and
+`{"type":"start_recording","metadata":{...},"duration_seconds":5,"requested_sample_rate_hz":50}` and
 `{"type":"stop_recording"}`. The device is expected to stream continuously;
 these commands are notifications and **are not acknowledged or verified yet**.
 The Pi client must implement its own acquisition queue and handle backpressure.
 The prototype does not yet guarantee lossless operation under load.
 
 The browser uses `/ws` with `set_source`, `start_recording`, `stop_recording`,
-`review_trial`, and `get_status` messages. `GET /health` gives current state.
+`review_trial`, and `get_status` messages. `start_recording` includes
+`countdown_seconds`, `duration_seconds`, `requested_sample_rate_hz`, and a
+`destination` object. `GET /health` gives current state; `GET /api/trials`
+lists up to 500 local trial sidecars, and `GET /api/trials/files/{filename}`
+downloads an existing generated trial file from the staging folder.
 The backend records device data before publishing it to browser queues; slow
 browser viewers can skip samples without intentionally dropping recorded data.
 A sample rate reported in the hello is nominal; it is not measured by the app.
@@ -136,7 +189,8 @@ Pi records preserve the producer's counter and timestamps. Built-in simulator
 records use a trial-local sequence starting at 0 and host Unix nanoseconds.
 Acceleration is m/s² (including gravity) and angular velocity is rad/s.
 
-The JSON sidecar records metadata, nominal sample rate, clock description,
+The JSON sidecar records metadata, requested duration/rate, stop reason, actual
+backend-recording duration, nominal sample rate, clock description,
 units, source, sample counts, and `review_status` (`recording`, `needs_review`,
 `accepted`, `rejected`, or `invalid`). Train only on **accepted** recordings;
 never treat missing/unreadable sidecars as accepted. Pi recordings are IMU-only.
@@ -160,7 +214,9 @@ output folder. Logs/recordings remain on the backend machine.
 ## Signal display and limitations
 
 The six IMU channels are acceleration X/Y/Z and gyroscope X/Y/Z. Axis selection,
-vertical scales and time window affect display. The time-window plot currently
+vertical scales and time window affect display. An IMU frequency view uses a
+256-sample Hann-windowed DFT at the reported nominal IMU rate; dropped browser
+samples reset the display buffer. The time-window plot currently
 uses the reported nominal rate and a fixed sample buffer; it is a visualization,
 not a precise measurement of irregular arrival timing. Built-in simulation also
 has 1–4 selectable EMG channels, a 20–200 Hz bandpass, a 60 Hz notch, and a
@@ -174,15 +230,16 @@ not validated processing for real sensors or clinical use.
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q
 node tests/test_signal.js
+node tests/test_ui.js
 ```
 
 Tests cover ten sequential simulated recordings, CSV metadata, no overwritten
 filenames, Pi sample/prediction messages, disconnects, sequence gaps, malformed
 messages, invalid trials, and interrupted-sidecar recovery. Node is only needed
-for the optional browser signal-math test. Tests are simulation-based; they do
+for the optional browser signal-math and DOM smoke checks. The DOM smoke test
+does not replace a visual browser test. Tests are simulation-based; they do
 not demonstrate real Pi/LSM6DSO32 integration, model accuracy, or the plan's
-10-minute/<1% dropped-sample criterion. File browsing/export, prediction
-staleness requirements, command acknowledgments, hardware queue sizing,
+10-minute/<1% dropped-sample criterion. Prediction staleness requirements, command acknowledgments, hardware queue sizing,
 sampling-rate verification and exact protocol remain work with the other team.
 
 | Failure mode | Current response / limitation |

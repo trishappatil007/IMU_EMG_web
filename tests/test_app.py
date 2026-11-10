@@ -161,7 +161,7 @@ def test_pi_device_recording_prediction_and_disconnect(tmp_path):
                 assert pred['gesture']=='pronation' and pred['confidence']==.82
                 browser.send_json({'type':'stop_recording'})
                 status=until(browser,'status',lambda m:m['phase']=='review')
-                assert status['emg_file'] is None and status['elapsed_seconds']==0
+                assert status['emg_file'] is None and status['elapsed_seconds'] >= 0
                 assert device.receive_json()['type']=='stop_recording'
                 with (tmp_path/status['file']).open(newline='') as f:
                     rows=list(csv.DictReader(f))

@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.emg_quality import assess_emg_csv, SIM_CONFIG
+from app.destinations import Destination, export
+from app.imu_quality import assess_imu_csv
 
 STATIC = Path(__file__).parent / "static"
 SAMPLE_RATE_HZ = 50  # approximate publication rate
@@ -75,6 +77,9 @@ class StartCommand(BaseModel):
     type: str
     metadata: Trial
     countdown_seconds: int = Field(default=3, ge=0, le=30, strict=True)
+    duration_seconds: float | None = Field(default=None, gt=0, le=3600, allow_inf_nan=False)
+    requested_sample_rate_hz: float | None = Field(default=None, gt=0, le=5000, allow_inf_nan=False)
+    destination: Destination = Field(default_factory=Destination)
 
 
 class Acquisition:
@@ -102,9 +107,16 @@ class Acquisition:
         self.last_device_sample = None
         self.last_device_sequence = None
         self.recording_started = None
+        self.finished_elapsed = 0
         self.prediction = None
         self.prediction_at = None
         self.emg_quality = None
+        self.imu_quality = None
+        self.destination = Destination()
+        self.duration_seconds = None
+        self.requested_rate = None
+        self.timer_task = None
+        self.export_result = None
 
     def status(self):
         return {"type": "status", "phase": self.phase,
@@ -114,9 +126,11 @@ class Acquisition:
                 "device_id": self.device.get('device_id') if self.device else None,
                 "sensor_model": self.device['sensor_model'] if self.source == 'pi' and self.device else "simulated_imu",
                 "sample_rate_hz": self.device['sample_rate_hz'] if self.source == 'pi' and self.device else SAMPLE_RATE_HZ,
-                "elapsed_seconds": time.monotonic() - self.recording_started if self.phase == 'recording' and self.recording_started else 0,
+                "elapsed_seconds": time.monotonic() - self.recording_started if self.phase == 'recording' and self.recording_started else self.finished_elapsed,
                 "prediction": self.prediction if self.prediction_at is not None and time.monotonic() - self.prediction_at < 3 else None,
-                "emg_quality": self.emg_quality,
+                "emg_quality": self.emg_quality, "imu_quality": self.imu_quality,
+                "duration_seconds": self.duration_seconds, "requested_sample_rate_hz": self.requested_rate,
+                "destination": self.destination.model_dump(), "export_result": self.export_result,
                 "countdown_remaining": self.countdown_remaining,
                 "metadata": self.metadata, "recorded_samples": self.count,
                 "emg_file": self.emg_filename, "emg_recorded_samples": self.emg_count,
@@ -166,12 +180,20 @@ class Acquisition:
             raise ValueError("Finish the current trial or review it before starting another.")
         if self.source == 'pi' and (not self.device or self.last_device_sample is None or time.monotonic() - self.last_device_sample >= 3):
             raise ValueError('Pi must be connected and sending recent samples before recording.')
+        actual_rate = self.device['sample_rate_hz'] if self.source == 'pi' else SAMPLE_RATE_HZ
+        if command.requested_sample_rate_hz is not None and abs(command.requested_sample_rate_hz - actual_rate) > 1e-6:
+            raise ValueError(f'Requested sample rate must match the source-reported rate ({actual_rate} Hz); this app cannot configure the sensor yet.')
+        self.destination = command.destination
+        self.duration_seconds = command.duration_seconds
+        self.requested_rate = command.requested_sample_rate_hz
+        self.export_result = None
+        self.finished_elapsed = 0
         # Catch invalid/unwritable destination before the countdown begins.
         self.directory.mkdir(parents=True, exist_ok=True)
         self.metadata = command.metadata.model_dump()
         self.filename = self.sidecar = self.emg_filename = None
         self.count, self.emg_count, self.error = 0, 0, None
-        self.emg_quality = None
+        self.emg_quality = self.imu_quality = None
         self.phase = "countdown"
         self.countdown_remaining = command.countdown_seconds
         self.publish(self.status())
@@ -212,6 +234,9 @@ class Acquisition:
                 "acceleration_unit": "m/s^2", "angular_velocity_unit": "rad/s",
                 "sequence_number_scope": "per trial, starting at zero",
                 "review_status": "recording", "recorded_samples": 0,
+                "requested_duration_seconds": self.duration_seconds,
+                "requested_sample_rate_hz": self.requested_rate,
+                "export_destination": self.destination.model_dump(),
                 "emg_csv_file": self.emg_filename, "emg_sensor_model": "simulated_emg",
                 "emg_sample_rate_hz": EMG_RATE_HZ, "emg_sample_rate_type": "nominal",
                 "emg_channel_count": EMG_CHANNELS, "emg_unit": "arbitrary simulation units",
@@ -251,13 +276,26 @@ class Acquisition:
         self.recording_started = time.monotonic()
         if self.source == 'pi':
             try:
-                self.device_command({'type': 'start_recording', 'metadata': self.metadata})
+                self.device_command({'type': 'start_recording', 'metadata': self.metadata, 'duration_seconds': self.duration_seconds, 'requested_sample_rate_hz': self.requested_rate})
             except ValueError:
                 self.stop(failed=True)
                 return
+        if self.phase == 'recording' and self.duration_seconds is not None:
+            self.timer_task = asyncio.create_task(self.auto_stop(self.duration_seconds))
         self.publish(self.status())
 
-    def stop(self, failed=False):
+    async def auto_stop(self, duration):
+        try:
+            await asyncio.sleep(duration)
+            if self.phase == 'recording':
+                self.stop(stop_reason='duration_elapsed')
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self.timer_task is asyncio.current_task():
+                self.timer_task = None
+
+    def stop(self, failed=False, stop_reason='operator_stop'):
         if self.phase == 'countdown':
             self.countdown_task.cancel()
             self.phase, self.countdown_remaining = 'idle', None
@@ -265,6 +303,11 @@ class Acquisition:
             return
         if self.phase != 'recording':
             raise ValueError("There is no active recording or countdown.")
+        if self.timer_task and self.timer_task is not asyncio.current_task():
+            self.timer_task.cancel()
+            self.timer_task = None
+        elapsed = time.monotonic() - self.recording_started if self.recording_started else None
+        self.finished_elapsed = elapsed or 0
         try:
             self.handle.close()
         except OSError:
@@ -286,6 +329,10 @@ class Acquisition:
         self.trial_info['recorded_samples'] = self.count
         self.trial_info['emg_recorded_samples'] = self.emg_count
         self.trial_info['recording_error'] = bool(failed)
+        self.trial_info['actual_duration_seconds'] = elapsed
+        self.trial_info['stop_reason'] = 'interrupted' if failed else stop_reason
+        self.imu_quality = assess_imu_csv(self.directory / self.filename, self.count)
+        self.trial_info['imu_quality'] = self.imu_quality
         if self.emg_filename:
             self.emg_quality = assess_emg_csv(self.directory / self.emg_filename, EMG_CHANNELS,
                                               self.emg_count, SIM_CONFIG)
@@ -302,16 +349,24 @@ class Acquisition:
             self.error = 'Could not update metadata. Check disk space and permissions, then review again.'
         self.publish(self.status())
 
-    def review(self, decision, override_reason=""):
+    async def review(self, decision, override_reason="", destination=None):
         if self.phase != 'review':
             raise ValueError('There is no trial awaiting review.')
         if decision not in ('accepted', 'rejected'):
             raise ValueError('Review decision must be accepted or rejected.')
         if decision == 'accepted' and (self.count == 0 or (self.source == 'simulated' and self.emg_count == 0) or self.trial_info.get('recording_error')):
             raise ValueError('Cannot accept an empty or failed recording. Reject and repeat it.')
+        if decision == 'accepted' and destination is not None:
+            self.destination = Destination.model_validate(destination)
         if not isinstance(override_reason, str) or len(override_reason) > 1000:
             raise ValueError('Override reason must be text of at most 1000 characters.')
-        # Recheck the actual saved raw file at acceptance, not just the live plot.
+        # Recheck the saved raw files at acceptance, not just the live plot.
+        if decision == 'accepted':
+            self.imu_quality = assess_imu_csv(self.directory / self.filename, self.count)
+            self.trial_info['imu_quality'] = self.imu_quality
+            if not self.imu_quality.get('data_integrity'):
+                self.publish(self.status())
+                raise ValueError('IMU data are missing or corrupt. Reject this trial and repeat it.')
         if decision == 'accepted' and self.emg_filename:
             self.emg_quality = assess_emg_csv(self.directory / self.emg_filename, EMG_CHANNELS,
                                               self.emg_count, SIM_CONFIG)
@@ -323,9 +378,30 @@ class Acquisition:
                 self.publish(self.status())
                 raise ValueError('EMG checks need review. Enter a reason to accept anyway, or reject the trial.')
         info = {**self.trial_info, 'review_status': ('invalid' if self.trial_info.get('recording_error') else decision)}
+        if decision == 'accepted':
+            info['export_destination'] = self.destination.model_dump()
         if decision == 'accepted' and self.emg_filename and self.emg_quality['status'] != 'pass':
             info['emg_quality_override_reason'] = override_reason.strip()
-        self.write_sidecar(info)  # only transition when the decision is safely stored
+        if decision == 'accepted':
+            # Incomplete/failed exports leave the source trial in review for retry.
+            self.phase = 'saving'
+            self.error = None
+            self.publish(self.status())
+            try:
+                files = {self.filename:(self.directory/self.filename).read_bytes()}
+                if self.emg_filename:
+                    files[self.emg_filename] = (self.directory/self.emg_filename).read_bytes()
+                files[self.sidecar] = (json.dumps(info, indent=2) + '\n').encode('utf-8')
+                result = await asyncio.to_thread(export, self.destination, self.directory, files)
+                self.write_sidecar(info)
+                self.export_result = result
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.phase = 'review'
+                self.error = str(exc)[:500] or 'Export failed. The trial remains pending review.'
+                self.publish(self.status())
+                raise ValueError(self.error) from exc
+        else:
+            self.write_sidecar(info)
         self.trial_info = info
         self.phase, self.error = 'idle', None
         self.publish(self.status())
@@ -470,6 +546,29 @@ def create_app(data_dir: Path | None = None):
     async def health():
         return {"ok": True, **acquisition.status()}
 
+    @app.get('/api/trials')
+    async def list_trials():
+        trials = []
+        if acquisition.directory.exists():
+            for path in sorted(acquisition.directory.glob('trial-*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:500]:
+                try:
+                    info = json.loads(path.read_text(encoding='utf-8'))
+                    trials.append({key:info.get(key) for key in ('participant_id','session_id','gesture','trial_id','review_status','csv_file','emg_csv_file','sensor_model','source','recorded_samples') } | {'metadata_file':path.name})
+                except (OSError, json.JSONDecodeError):
+                    continue
+        return {'trials':trials}
+
+    @app.get('/api/trials/files/{filename}')
+    async def trial_file(filename: str):
+        import re
+        from fastapi import HTTPException
+        if not re.fullmatch(r'trial-[0-9a-f]{32}(?:-emg)?\.(?:csv|json)', filename):
+            raise HTTPException(status_code=404)
+        path = acquisition.directory / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path, filename=filename)
+
     @app.websocket("/ws")
     async def stream(ws: WebSocket):
         await ws.accept()
@@ -495,7 +594,7 @@ def create_app(data_dir: Path | None = None):
                     elif message.get("type") == "stop_recording":
                         acquisition.stop()
                     elif message.get("type") == "review_trial":
-                        acquisition.review(message.get('decision'), message.get('override_reason', ''))
+                        await acquisition.review(message.get('decision'), message.get('override_reason', ''), message.get('destination'))
                     elif message.get("type") == "get_status":
                         acquisition.enqueue(queue, acquisition.status())
                     else:
