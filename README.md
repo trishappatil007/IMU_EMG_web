@@ -91,14 +91,21 @@ Choose the destination in the Data Collection panel. The destination is used
   `recordings/approved/`. All files are copied there after approval; a different
   existing file is never overwritten. The staging folder is retained. Do not
   choose the staging folder itself as the destination.
-- **GitHub:** enter an existing `owner/repository`, existing branch, and relative
-  repository folder. Install [GitHub CLI](https://cli.github.com/) on the backend
+- **GitHub:** the repository field is prefilled with
+  [LonghornNeurotech/EMG-Data-Base](https://github.com/LonghornNeurotech/EMG-Data-Base),
+  branch `main` and folder `recordings`; all three can be changed. Local folder
+  remains the default destination until GitHub is selected. The selected branch
+  must already exist. If the repository is empty, a repository maintainer must
+  first create an initial commit, such as a README, to create the branch.
+  Install [GitHub CLI](https://cli.github.com/) on the backend
   computer and authenticate beforehand with `gh auth login`; `gh auth status`
   should show the account that has write access. No token is entered in the
   browser or saved in trial metadata. The backend uses the authenticated `gh`
   CLI to create one commit containing all files, checking the branch head and
   refusing to overwrite existing trial filenames. GitHub repository visibility
   and collaborator permissions determine who can see uploaded recordings.
+  Confirm the destination's visibility and the team's participant-data policy
+  before accepting a trial for upload; public repositories expose uploaded data.
 
 If GitHub export fails (missing CLI, login, permissions, nonexistent/protected
 branch, network, changed branch, or API limits), the trial stays in review and

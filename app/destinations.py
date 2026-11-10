@@ -9,11 +9,14 @@ from pathlib import Path, PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+DEFAULT_GITHUB_REPOSITORY = 'LonghornNeurotech/EMG-Data-Base'
+
+
 class Destination(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     kind: str = 'local'
     folder: str = Field(default='', max_length=500)
-    repository: str = Field(default='', max_length=200)
+    repository: str = Field(default=DEFAULT_GITHUB_REPOSITORY, max_length=200)
     branch: str = Field(default='main', max_length=200)
     path: str = Field(default='recordings', max_length=300)
 
