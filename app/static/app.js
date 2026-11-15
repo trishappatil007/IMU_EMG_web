@@ -96,8 +96,12 @@ function connect(){
       $('message').textContent=data.error || messages[phase];
       $('file').textContent=data.export_result ? 'Approved export: '+(data.export_result.url || data.export_result.folder)
         : data.emg_file ? 'Pending files: '+[data.emg_file,data.metadata_file].filter(Boolean).join(', ') : '';
+      if(data.destination_warning && data.destination_warning!==lastExportNotice){
+        lastExportNotice=data.destination_warning;
+        window.alert(data.destination_warning+'\\n\\nThe backend default folder will be used.');
+      }
       if(data.export_result && data.export_result.warning){
-        const noticeKey=[data.export_result.folder,(data.export_result.files||[]).join(',')].join('|');
+        const noticeKey=data.export_result.warning;
         if(noticeKey!==lastExportNotice){
           lastExportNotice=noticeKey;
           window.alert(data.export_result.warning+'\\n\\nActual save location: '+data.export_result.folder);
