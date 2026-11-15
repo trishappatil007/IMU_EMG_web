@@ -43,6 +43,7 @@ $('trial-form').onsubmit=event=>{
   event.preventDefault();
   const metadata=Object.fromEntries(metadataFields.map(key=>[key,$(key).value.trim()]));
   const value=$('sample_rate_hz').value.trim();
+  lastExportNotice='';
   command({type:'start_recording',metadata,countdown_seconds:3,
            requested_sample_rate_hz:value ? Number(value) : null,destination:selectedDestination()});
 };
