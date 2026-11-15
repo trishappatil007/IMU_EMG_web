@@ -8,12 +8,13 @@ import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
+import re
 from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator, model_validator
 
 from app.destinations import Destination, export
 from app.emg_quality import SIM_CONFIG, assess_emg_csv
@@ -32,14 +33,32 @@ class Trial(BaseModel):
     session_id: str = Field(min_length=1, max_length=80)
     gesture: Literal["forearm raise", "forearm lower", "pronation", "supination", "gesture 5", "gesture 6", "idle"]
 
+    @field_validator("participant_id", "session_id")
+    @classmethod
+    def validate_identifier(cls, value, info):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value):
+            label = "Participant ID" if info.field_name == "participant_id" else "Session ID"
+            raise ValueError(
+                f"{label} must start with a letter or number and contain only "
+                "letters, numbers, periods, underscores, or hyphens (max 80 characters)."
+            )
+        return value
+
 
 class StartCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     type: Literal["start_recording"]
     metadata: Trial
     countdown_seconds: int = Field(default=3, ge=0, le=30, strict=True)
-    requested_sample_rate_hz: float | None = Field(default=None, gt=0, le=5000)
+    requested_sample_rate_hz: float | None = Field(default=None, gt=0, le=5000, strict=True)
     destination: Destination = Field(default_factory=Destination)
+
+    @field_validator("requested_sample_rate_hz")
+    @classmethod
+    def validate_sample_rate(cls, value):
+        if value is not None and (not math.isfinite(value) or value <= 0 or value > 5000):
+            raise ValueError("Sampling frequency must be a finite number greater than 0 and no more than 5000 Hz.")
+        return value
 
 
 class MudraHello(BaseModel):
@@ -381,6 +400,21 @@ class Acquisition:
             await asyncio.sleep(SIM_BATCH / SIM_RATE)
 
 
+def validation_error_payload(exc: ValidationError):
+    """Convert Pydantic errors into concise field-level messages for the UI."""
+    fields = []
+    for item in exc.errors(include_url=False):
+        location = " → ".join(str(part).replace("_", " ").capitalize() for part in item["loc"])
+        detail = item["msg"]
+        if detail.startswith("Value error, "):
+            detail = detail[len("Value error, "):]
+        fields.append({"field": location or "Request", "message": detail})
+    message = "Please correct the following field(s): " + " ".join(
+        f"{item['field']}: {item['message']}" for item in fields
+    )
+    return {"type": "error", "message": message, "fields": fields}
+
+
 def create_app(data_dir: Path | None = None):
     acquisition = Acquisition(data_dir if data_dir is not None else Path(os.getenv("EMG_DATA_DIR", "recordings")))
 
@@ -475,8 +509,10 @@ def create_app(data_dir: Path | None = None):
                         acquisition.enqueue(queue, acquisition.status())
                     else:
                         raise ValueError("Unknown command.")
-                except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                    acquisition.enqueue(queue, {"type": "error", "message": str(exc)})
+                except ValidationError as exc:
+                    acquisition.enqueue(queue, validation_error_payload(exc))
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    acquisition.enqueue(queue, {"type": "error", "message": str(exc), "fields": []})
                 except OSError:
                     acquisition.enqueue(queue, {"type": "error", "message": "Cannot write recording; check disk space and folder permissions."})
         except WebSocketDisconnect:
