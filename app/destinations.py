@@ -50,7 +50,32 @@ class Destination(BaseModel):
 
 
 def export_local(destination, staging: Path, files: dict[str, bytes]):
-    target = Path(destination.folder).expanduser().resolve() if destination.folder else (staging / 'approved').resolve()
+    default_target = (staging / 'approved').resolve()
+    requested_folder = destination.folder.strip()
+    warning = None
+
+    if requested_folder:
+        requested_target = Path(requested_folder).expanduser()
+        # Local destinations must be explicit absolute paths (for example,
+        # C:/Users/Name/Documents/EMG). A random relative string must never
+        # silently create a new folder relative to the server's working directory.
+        if not requested_target.is_absolute():
+            warning = 'The folder destination must be an absolute path such as C:/Users/Name/Documents/EMG. Files were saved to the default folder instead.'
+            target = default_target
+        else:
+            try:
+                resolved = requested_target.resolve()
+                if not resolved.exists() or not resolved.is_dir() or not os.access(resolved, os.W_OK):
+                    warning = 'The selected folder does not exist or is not writable. Files were saved to the default folder instead.'
+                    target = default_target
+                else:
+                    target = resolved
+            except OSError:
+                warning = 'The selected folder could not be accessed. Files were saved to the default folder instead.'
+                target = default_target
+    else:
+        target = default_target
+
     target.mkdir(parents=True, exist_ok=True)
     # CSVs precede the metadata file: a partial export never creates an accepted
     # sidecar before all samples are present. Retry accepts only identical files.
@@ -64,7 +89,10 @@ def export_local(destination, staging: Path, files: dict[str, bytes]):
         except FileExistsError:
             if path.read_bytes() != content:
                 raise ValueError(f'Existing destination file differs: {filename}')
-    return {'kind': 'local', 'folder': str(target), 'files': list(files)}
+    result = {'kind': 'local', 'folder': str(target), 'files': list(files)}
+    if warning:
+        result['warning'] = warning
+    return result
 
 
 def gh_call(payload):
