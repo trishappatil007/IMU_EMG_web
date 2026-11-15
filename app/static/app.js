@@ -107,7 +107,15 @@ function connect(){
       if(history.length>10000) history.splice(0,history.length-10000);
       $('saved').textContent=data.recorded_samples;
     } else if(data.type==='error'){
-      pending=false; $('message').textContent=data.message; controls();
+      pending=false;
+      $('message').textContent=data.message;
+      if(Array.isArray(data.fields) && data.fields.length){
+        const details=data.fields.map(item=>item.field+': '+item.message).join('\\n');
+        window.alert('Please check the trial details:\\n\\n'+details);
+      } else {
+        window.alert(data.message || 'The backend rejected the request.');
+      }
+      controls();
     }
   };
   socket.onclose=()=>{ready=false;pending=false;controls();$('connection').textContent='Disconnected · retrying…';
