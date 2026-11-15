@@ -28,6 +28,35 @@ def command(destination=None):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_metadata_identifiers_reject_invalid_characters(self):
+        with self.assertRaisesRegex(Exception, 'Participant ID must start'):
+            Trial(participant_id='../P1', session_id='S1', gesture='idle')
+        with self.assertRaisesRegex(Exception, 'Session ID must start'):
+            Trial(participant_id='P1', session_id='S 1', gesture='idle')
+        self.assertEqual(Trial(participant_id='P_01-A', session_id='Session.2', gesture='idle').participant_id, 'P_01-A')
+
+    def test_sampling_frequency_must_be_finite_and_in_range(self):
+        valid = {'type': 'start_recording', 'metadata': {'participant_id': 'P1', 'session_id': 'S1', 'gesture': 'idle'}}
+        for rate in (0, -1, 5000.1, float('inf')):
+            with self.subTest(rate=rate):
+                with self.assertRaises(Exception):
+                    StartCommand.model_validate({**valid, 'requested_sample_rate_hz': rate})
+        self.assertEqual(StartCommand.model_validate({**valid, 'requested_sample_rate_hz': 1000}).requested_sample_rate_hz, 1000)
+
+    def test_websocket_returns_field_level_validation_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with TestClient(create_app(Path(tmp))) as client, client.websocket_connect('/ws') as ws:
+                until(ws, 'status')
+                bad = command()
+                bad['metadata']['participant_id'] = 'bad id!'
+                bad['metadata']['gesture'] = 'not-a-gesture'
+                ws.send_json(bad)
+                error = until(ws, 'error')
+                self.assertEqual(error['type'], 'error')
+                self.assertEqual({field['field'] for field in error['fields']}, {'Metadata → Participant id', 'Metadata → Gesture'})
+                self.assertIn('Please correct the following field(s)', error['message'])
+                self.assertEqual(client.get('/health').json()['phase'], 'idle')
+
     def test_gestures_and_default_countdown(self):
         labels = ['forearm raise', 'forearm lower', 'pronation', 'supination', 'gesture 5', 'gesture 6', 'idle']
         for label in labels:
