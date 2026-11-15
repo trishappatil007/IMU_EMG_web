@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 DEFAULT_GITHUB_REPOSITORY = 'LonghornNeurotech/EMG-Data-Base'
@@ -19,6 +19,20 @@ class Destination(BaseModel):
     repository: str = Field(default=DEFAULT_GITHUB_REPOSITORY, max_length=200)
     branch: str = Field(default='main', max_length=200)
     path: str = Field(default='recordings', max_length=300)
+
+    @field_validator('folder')
+    @classmethod
+    def validate_local_folder(cls, value):
+        if any(ord(character) < 32 for character in value):
+            raise ValueError('Folder destination cannot contain control characters.')
+        return value
+
+    @field_validator('repository', 'branch', 'path')
+    @classmethod
+    def validate_text_fields(cls, value):
+        if any(ord(character) < 32 for character in value):
+            raise ValueError('Destination fields cannot contain control characters.')
+        return value
 
     @model_validator(mode='after')
     def validate_destination(self):
