@@ -49,34 +49,51 @@ class Destination(BaseModel):
         return self
 
 
-def export_local(destination, staging: Path, files: dict[str, bytes]):
+def resolve_local_destination(destination, staging: Path):
+    """Return a writable destination folder, falling back safely when invalid."""
     default_target = (staging / 'approved').resolve()
     requested_folder = destination.folder.strip()
-    warning = None
 
-    if requested_folder:
-        requested_target = Path(requested_folder).expanduser()
-        # Local destinations must be explicit absolute paths (for example,
-        # C:/Users/Name/Documents/EMG). A random relative string must never
-        # silently create a new folder relative to the server's working directory.
-        if not requested_target.is_absolute():
-            warning = 'The folder destination must be an absolute path such as C:/Users/Name/Documents/EMG. Files were saved to the default folder instead.'
-            target = default_target
-        else:
-            try:
-                resolved = requested_target.resolve()
-                if not resolved.exists() or not resolved.is_dir() or not os.access(resolved, os.W_OK):
-                    warning = 'The selected folder does not exist or is not writable. Files were saved to the default folder instead.'
-                    target = default_target
-                else:
-                    target = resolved
-            except OSError:
-                warning = 'The selected folder could not be accessed. Files were saved to the default folder instead.'
-                target = default_target
-    else:
-        target = default_target
+    if not requested_folder:
+        return default_target, None
 
+    requested_target = Path(requested_folder).expanduser()
+
+    # Reject relative paths. A typo must never create a folder under the
+    # server's current working directory.
+    if not requested_target.is_absolute():
+        return default_target, (
+            'Invalid folder destination: enter an existing absolute folder path, '
+            'for example C:/Users/YourName/Documents/EMG. '
+            'The files will be saved to the default folder instead.'
+        )
+
+    try:
+        target = requested_target.resolve(strict=True)
+        if not target.is_dir():
+            raise NotADirectoryError(str(target))
+
+        # Actually test write access. os.access() alone can be misleading
+        # on Windows and under service accounts.
+        probe = target / ('.emg_write_test_' + os.urandom(8).hex())
+        with probe.open('xb') as handle:
+            handle.write(b'test')
+            handle.flush()
+            os.fsync(handle.fileno())
+        probe.unlink()
+        return target, None
+    except (OSError, RuntimeError, ValueError):
+        return default_target, (
+            'Invalid folder destination: the folder does not exist, is not a '
+            'directory, or the backend cannot write to it. '
+            'The files will be saved to the default folder instead.'
+        )
+
+
+def export_local(destination, staging: Path, files: dict[str, bytes]):
+    target, warning = resolve_local_destination(destination, staging)
     target.mkdir(parents=True, exist_ok=True)
+
     # CSVs precede the metadata file: a partial export never creates an accepted
     # sidecar before all samples are present. Retry accepts only identical files.
     for filename, content in files.items():
@@ -93,7 +110,6 @@ def export_local(destination, staging: Path, files: dict[str, bytes]):
     if warning:
         result['warning'] = warning
     return result
-
 
 def gh_call(payload):
     env = dict(os.environ, GH_PROMPT_DISABLED='1')
