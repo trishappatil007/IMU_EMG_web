@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let socket, ready=false, pending=false, phase='idle', source='simulated', mudraReceiving=false;
-let lastSequence=null, filters=[], sourceRate=1000;
+let lastSequence=null, filters=[], sourceRate=1000, lastExportNotice='';
 const history=[], colors=['#c75c42','#168b80','#4475c6','#9f67aa'];
 const metadataFields=['participant_id','session_id','gesture'];
 
@@ -96,6 +96,13 @@ function connect(){
       $('message').textContent=data.error || messages[phase];
       $('file').textContent=data.export_result ? 'Approved export: '+(data.export_result.url || data.export_result.folder)
         : data.emg_file ? 'Pending files: '+[data.emg_file,data.metadata_file].filter(Boolean).join(', ') : '';
+      if(data.export_result && data.export_result.warning){
+        const noticeKey=[data.export_result.folder,(data.export_result.files||[]).join(',')].join('|');
+        if(noticeKey!==lastExportNotice){
+          lastExportNotice=noticeKey;
+          window.alert(data.export_result.warning+'\\n\\nActual save location: '+data.export_result.folder);
+        }
+      }
       if(phase==='review') renderQuality(data.emg_quality);
       if(phase==='countdown') $('override-reason').value='';
       if(phase!=='idle' && data.metadata) metadataFields.forEach(key=>{$(key).value=data.metadata[key] ?? '';});
