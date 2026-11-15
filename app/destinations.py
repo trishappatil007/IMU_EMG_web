@@ -65,7 +65,7 @@ def resolve_local_destination(destination, staging: Path):
         return default_target, (
             'Invalid folder destination: enter an existing absolute folder path, '
             'for example C:/Users/YourName/Documents/EMG. '
-            'The files will be saved to the default folder instead.'
+            f'The files will be saved to the default folder: {default_target}'
         )
 
     try:
