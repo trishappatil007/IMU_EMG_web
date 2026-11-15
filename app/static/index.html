@@ -1,42 +1,118 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LHNT · IMU / EMG</title><link rel="stylesheet" href="/static/style.css"><script src="/static/signal.js" defer></script><script src="/static/app.js" defer></script></head>
-<body><main>
-<header><span class="eyebrow">LONGHORN NEUROTECH / ACQUISITION</span><h1>IMU / EMG workspace</h1><p>Prepare a trial. Inspect the stream. Record movement.</p></header>
-<nav class="tabs" aria-label="Workspace sections"><button type="button" id="show-collection" aria-pressed="true">Data Collection</button><button type="button" id="show-data" aria-pressed="false">Data View</button></nav>
-<section class="status" aria-live="polite"><span id="connection">Connecting…</span><span id="recording">Recording status unknown</span><span id="pi_status">Pi: disconnected</span><span id="source_status">Source: simulation</span><span>Elapsed: <span id="elapsed">0.0 s</span></span></section>
-<div class="layout" id="collection-view"><section class="card"><h2>Trial details</h2><label>Signal source<select id="source_select"><option value="simulated">Simulated IMU + EMG</option><option value="pi">Raspberry Pi IMU</option></select></label><p id="prediction">Prediction: unavailable</p><form id="trial-form"><fieldset id="metadata">
-<label>Participant ID<input id="participant_id" placeholder="P001" maxlength="80" required></label>
-<label>Session ID<input id="session_id" placeholder="S001" maxlength="80" required></label>
-<label>Gesture<select id="gesture" required><option value="">Choose a gesture</option><option value="forearm raise">Forearm raise</option><option value="forearm lower">Forearm lower</option><option value="pronation">Pronation</option><option value="supination">Supination</option><option value="idle">Idle</option></select></label>
-<label>Trial ID<input id="trial_id" type="number" min="1" step="1" value="1" required></label>
-<label>Sampling rate (Hz)<input id="sample_rate_hz" type="number" min="0.01" max="5000" step="any" value="50" required><small>The requested rate must match the connected source; sensor configuration is not yet supported.</small></label>
-<label>Recording duration (seconds)<input id="duration_seconds" type="number" min="0.1" max="3600" step="0.1" value="5" required></label>
-<label>Countdown (seconds)<input id="countdown_seconds" type="number" min="0" max="30" step="1" value="3" required></label>
-<details><summary>Optional collection notes</summary>
-<label>Mounting location<input id="mounting_location" placeholder="e.g. forearm near wrist" maxlength="200"></label>
-<label>Orientation notes<textarea id="orientation_notes" maxlength="500" placeholder="e.g. X-axis points toward hand"></textarea></label>
-<label>Accelerometer range<input id="accelerometer_range" placeholder="If known; include units" maxlength="100"></label>
-<label>Gyroscope range<input id="gyroscope_range" placeholder="If known; include units" maxlength="100"></label>
-<label>Trial notes<textarea id="trial_notes" maxlength="1000"></textarea></label></details></fieldset>
-<fieldset id="destination_settings"><legend>Approved trial destination</legend><label>Approved trial destination<select id="destination_kind"><option value="local">Local folder on backend computer</option><option value="github">GitHub repository</option></select></label>
-<div id="local-destination"><label>Local folder path<input id="local_folder" maxlength="500" placeholder="Leave blank for recordings/approved"></label></div>
-<div id="github-destination" hidden><label>GitHub repository<input id="github_repo" maxlength="200" placeholder="owner/repository"></label><label>Existing branch<input id="github_branch" maxlength="200" value="main"></label><label>Repository folder<input id="github_path" maxlength="300" value="recordings" placeholder="recordings"></label><small>Uses gh CLI authentication on the backend computer. Uploads to a public repository are visible to everyone.</small></div>
-</fieldset>
-<button id="start" type="submit" disabled>Start countdown</button><button id="stop" type="button" disabled>Stop recording</button><div id="review-actions" hidden><section id="imu-quality-review" class="quality-review" aria-live="polite"><h3>IMU data integrity</h3><p id="imu-quality-summary">Waiting for the trial to finish.</p><div id="imu-quality-checks"></div><div id="imu-quality-channels" class="quality-channels"></div><p id="imu-quality-limitations" class="muted"></p></section><section id="quality-review" class="quality-review" aria-live="polite"><h3>EMG signal quality</h3><p id="quality-summary">Waiting for the trial to finish.</p><div id="quality-checks"></div><div id="quality-channels" class="quality-channels"></div><p id="quality-limitations" class="muted"></p><label id="override-label" hidden>Reason to accept despite flagged or unassessed checks<textarea id="override-reason" maxlength="1000" placeholder="Explain why this trial is still usable"></textarea></label></section><button id="accept" type="button" disabled>Accept trial</button><button id="reject" type="button" disabled>Reject / repeat</button></div></form><p id="message" role="status">Waiting for backend status.</p><p id="file"></p></section>
-<section class="card signal-card"><h2>Live signals</h2>
-<p class="muted">Select simulation or Pi as the source. Channel selections and filters affect the display only; raw samples are saved.</p>
-<div class="plot-options"><label>Time window (seconds)<select id="window"><option value="1">1</option><option value="2">2</option><option value="5" selected>5</option><option value="10">10</option></select></label><label>Acceleration range (± m/s²)<input id="accel_scale" type="number" min="0.1" step="1" value="12"></label><label>Gyroscope range (± rad/s)<input id="gyro_scale" type="number" min="0.01" step="0.1" value="1"></label></div>
-<p class="legend">X / EMG 1 — coral &nbsp; Y / EMG 2 — teal &nbsp; Z / EMG 3 — blue &nbsp; EMG 4 — purple</p><fieldset class="channel-options"><legend>IMU channels to show</legend><label><input type="checkbox" value="ax" checked> Accel X</label><label><input type="checkbox" value="ay" checked> Accel Y</label><label><input type="checkbox" value="az" checked> Accel Z</label><label><input type="checkbox" value="gx" checked> Gyro X</label><label><input type="checkbox" value="gy" checked> Gyro Y</label><label><input type="checkbox" value="gz" checked> Gyro Z</label></fieldset>
-<h3>Acceleration · m/s²</h3><canvas id="accel_plot" width="800" height="200" role="img" aria-label="Live simulated acceleration"></canvas>
-<h3>Angular velocity · rad/s</h3><canvas id="gyro_plot" width="800" height="200" role="img" aria-label="Live simulated angular velocity"></canvas>
-<div class="plot-options"><label>IMU frequency channel<select id="imu_spectrum_channel"><option value="ax">Accel X</option><option value="ay">Accel Y</option><option value="az">Accel Z</option><option value="gx">Gyro X</option><option value="gy">Gyro Y</option><option value="gz">Gyro Z</option></select></label></div><h3>IMU frequency spectrum · Hz</h3><canvas id="imu_spectrum_plot" width="800" height="200" role="img" aria-label="IMU frequency spectrum"></canvas><p id="imu_spectrum_status" class="muted">Waiting for samples…</p>
-<div id="emg_panel"><div class="plot-options"><label>EMG channels to display<select id="emg_channels"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label><label>EMG range (± simulation units)<input id="emg_scale" type="number" min="0.01" step="0.25" value="2"></label><label>Frequency view channel<select id="spectrum_channel"><option value="0">EMG 1</option><option value="1">EMG 2</option><option value="2">EMG 3</option><option value="3">EMG 4</option></select></label></div>
-<fieldset class="channel-options"><legend>EMG display filters</legend><label><input type="checkbox" id="bandpass"> 20–200 Hz bandpass</label><label><input type="checkbox" id="notch"> 60 Hz notch</label></fieldset>
-<p class="muted">Filters are experimental visualization tools for the simulated 1,000 Hz stream. The frequency view uses the selected filtered signal when filters are enabled.</p>
-<div class="emg-panels"><div><h3>EMG waveform · simulation units</h3><canvas id="emg_plot" width="800" height="220" role="img" aria-label="Live simulated EMG"></canvas></div><div><h3>EMG frequency spectrum · Hz</h3><canvas id="spectrum_plot" width="800" height="220" role="img" aria-label="Frequency spectrum of simulated EMG"></canvas><p id="spectrum_status" class="muted">Waiting for samples…</p></div></div>
-</div><h3>Latest IMU sample</h3><div id="values" class="values"></div><p><span id="received">0</span> IMU samples received this connection · <span id="saved">0</span> IMU samples recorded</p></section></div>
-<section id="data-view" class="card" hidden><h2>Recorded trials</h2><p>Files listed here are on the backend computer. Rejected and invalid trials remain available for review.</p><button type="button" id="refresh-trials">Refresh trials</button><div id="trials-list" aria-live="polite">Loading…</div></section>
-<footer>Local acquisition foundation · Recordings are saved by the backend.</footer>
-</main></body></html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LHNT · EMG collection</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/signal.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <span class="eyebrow">LONGHORN NEUROTECH / DATA COLLECTION</span>
+    <h1>EMG workspace</h1>
+    <p>Connect the band, prepare a trial, and review the signal.</p>
+  </header>
+  <nav class="tabs" aria-label="Workspace sections">
+    <button type="button" id="show-collection" aria-pressed="true">Data Collection</button>
+    <button type="button" id="show-data" aria-pressed="false">Data View</button>
+  </nav>
+  <section class="status" aria-live="polite">
+    <span id="connection">Connecting…</span>
+    <span id="mudra_status">Mudra: disconnected</span>
+    <span id="recording">Recording status unknown</span>
+    <span>Elapsed: <strong id="elapsed">0.0 s</strong></span>
+  </section>
 
+  <div class="layout" id="collection-view">
+    <section class="card">
+      <h2>Set up a trial</h2>
+      <label>Signal source
+        <select id="source_select"><option value="simulated">Simulated EMG</option><option value="mudra">Mudra Link EMG</option></select>
+      </label>
+      <form id="trial-form">
+        <fieldset id="metadata">
+          <label>Sampling frequency (Hz)
+            <input id="sample_rate_hz" type="number" min="0.01" max="5000" step="any" value="1000" placeholder="Leave blank if unknown">
+            <small>Enter a known rate; this does not change the sensor's settings.</small>
+          </label>
+          <label>Session ID<input id="session_id" placeholder="S001" maxlength="80" required></label>
+          <label>Participant ID<input id="participant_id" placeholder="P001" maxlength="80" required></label>
+          <label>Gesture
+            <select id="gesture" required>
+              <option value="">Choose a gesture</option>
+              <option value="forearm raise">Forearm raise</option>
+              <option value="forearm lower">Forearm lower</option>
+              <option value="pronation">Pronation</option>
+              <option value="supination">Supination</option>
+              <option value="gesture 5">Gesture 5 (name to be confirmed)</option>
+              <option value="gesture 6">Gesture 6 (name to be confirmed)</option>
+              <option value="idle">Idle</option>
+            </select>
+          </label>
+        </fieldset>
+        <fieldset id="destination_settings">
+          <label>Save destination
+            <select id="destination_kind"><option value="local">Local folder on this computer</option><option value="github">GitHub repository</option></select>
+          </label>
+          <div id="local-destination">
+            <label>Folder destination<input id="local_folder" maxlength="500" placeholder="Leave blank for recordings/approved"></label>
+          </div>
+          <div id="github-destination" hidden>
+            <label>GitHub repository<input id="github_repo" maxlength="200" placeholder="owner/repository"></label>
+            <label>Existing branch<input id="github_branch" maxlength="200" value="main"></label>
+            <label>Repository folder<input id="github_path" maxlength="300" value="recordings"></label>
+            <small>Uses GitHub CLI on the backend computer. Files uploaded to a public repository are visible to everyone.</small>
+          </div>
+        </fieldset>
+        <div class="actions">
+          <button id="run" type="submit" disabled>Run</button>
+          <button id="stop" type="button" class="secondary" disabled>Stop</button>
+        </div>
+        <p class="muted">Run starts a 3-second countdown. Press Stop when the trial is complete.</p>
+        <div id="review-actions" class="quality-review" hidden>
+          <h3>Review EMG signal</h3>
+          <p id="quality-summary">Waiting for the trial to finish.</p>
+          <div id="quality-checks"></div><div id="quality-channels" class="quality-channels"></div>
+          <p id="quality-limitations" class="muted"></p>
+          <label id="override-label" hidden>Reason to accept despite checks needing review
+            <textarea id="override-reason" maxlength="1000" placeholder="Explain why this trial is usable"></textarea>
+          </label>
+          <div class="actions"><button id="accept" type="button" disabled>Accept trial</button><button id="reject" type="button" class="secondary" disabled>Reject / repeat</button></div>
+        </div>
+      </form>
+      <p id="message" role="status">Waiting for backend status.</p>
+      <p id="file" class="muted"></p>
+    </section>
+
+    <section class="card signal-card">
+      <div class="section-heading"><div><h2>Live EMG</h2><p id="emg_display_note" class="muted">Raw samples are recorded; display settings do not change saved data.</p></div><span class="pill"><span id="saved">0</span> samples recorded</span></div>
+      <div class="plot-options">
+        <label>Channels shown<select id="emg_channels"><option>1</option><option selected>2</option><option>3</option><option id="emg_four">4</option></select></label>
+        <label><span id="emg_scale_label">Vertical range (± simulation units)</span><input id="emg_scale" type="number" min="0.01" step="any" value="2"></label>
+        <label>Time window<select id="window"><option>1</option><option>2</option><option selected>5</option><option>10</option></select></label>
+        <label>Frequency channel<select id="spectrum_channel"><option value="0">EMG 1</option><option value="1">EMG 2</option><option value="2">EMG 3</option><option id="spectrum_four" value="3">EMG 4</option></select></label>
+      </div>
+      <fieldset class="filter-options"><legend>Display filters</legend>
+        <label><input type="checkbox" id="bandpass"> 20–200 Hz bandpass</label>
+        <label><input type="checkbox" id="notch"> 60 Hz notch</label>
+      </fieldset>
+      <p class="legend">EMG 1 — coral &nbsp; EMG 2 — teal &nbsp; EMG 3 — blue &nbsp; EMG 4 — purple</p>
+      <div class="emg-panels">
+        <div><h3 id="emg_title">Waveform · simulation units</h3><canvas id="emg_plot" width="800" height="260" role="img" aria-label="Live EMG waveform"></canvas></div>
+        <div><h3>Frequency spectrum</h3><canvas id="spectrum_plot" width="800" height="260" role="img" aria-label="EMG frequency spectrum"></canvas><p id="spectrum_status" class="muted">Waiting for samples…</p></div>
+      </div>
+    </section>
+  </div>
+
+  <section id="data-view" class="card" hidden>
+    <h2>Recorded trials</h2><p class="muted">These files are on the computer running the backend.</p>
+    <button type="button" id="refresh-trials" class="secondary">Refresh trials</button>
+    <div id="trials-list" aria-live="polite">Loading…</div>
+  </section>
+  <footer>EMG collection foundation · Raw data are saved by the backend.</footer>
+</main>
+</body>
+</html>

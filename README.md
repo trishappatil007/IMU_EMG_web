@@ -1,292 +1,141 @@
-# IMU data collection and prediction web app
+# Longhorn Neurotech EMG collection
 
-A laptop-hosted FastAPI/WebSocket prototype for labeled IMU trials. It can run
-with built-in simulated IMU/EMG or receive a device stream (e.g. a Raspberry Pi)
-through a **proposed** WebSocket protocol. Four active forearm gestures and idle
-follow the semester implementation plan. The device protocol, sensor settings and
-validation criteria must be confirmed with the IMU/inference team before real
-participant collection. The Raspberry Pi hardware, sensor driver, and model have
-not yet been verified with this application.
+A FastAPI/WebSocket app for collecting and reviewing labeled EMG trials. Use the
+built-in simulator or the experimental Mudra Link Bluetooth bridge. Each trial
+has a raw EMG CSV and a JSON metadata/quality report. Approved trials can be
+exported to a local folder or a GitHub repository.
 
-## Run the application (Windows)
+The Mudra connection and signal-quality criteria have **not been tested with
+physical hardware in this app**. Validate the band, sampling rate, timestamps,
+and recording completeness with the team before collecting participant data.
 
-Clone this repository, or open your existing copy in VS Code and run `git pull`.
-From the repository folder, create a Python 3.10+ environment once:
+## Start the app on Windows
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+Open PowerShell in the repository folder. The first time, create the Python 3.10+
+environment and install the app:
 
-Start the server (reuse the existing environment on later runs):
+    py -m venv .venv
+    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+For later runs, start the server with:
 
-Open http://127.0.0.1:8000. If port 8000 is in use, replace `8000` with `8001`
-in the command and URL. Stop the server with Ctrl+C. On macOS/Linux use
-`python3 -m venv .venv`, `.venv/bin/python -m pip install -r requirements.txt`,
-and `.venv/bin/python -m uvicorn app.main:app`.
+    .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-## Try collection without hardware
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Leave PowerShell open while
+using the app; Ctrl+C stops the server. If port 8000 is in use, replace it with
+8001 in the command and browser address. On macOS/Linux, create an environment
+using python3 -m venv .venv, then use .venv/bin/python for the commands.
 
-1. In the browser choose **Simulated IMU + EMG**. The Pi status should still say
-   disconnected; browser connection and device connection are different things.
-2. Enter participant and session IDs, choose **forearm raise, forearm lower,
-   pronation, supination, or idle**, and choose a trial number. Optional notes,
-   mounting location, orientation, and sensor ranges are available.
-3. Enter a recording duration and requested IMU sample rate. The requested rate
-   must match the rate reported by the active source (the built-in simulator is
-   50 Hz); the app cannot set the hardware's sampling rate. Enter countdown and
-   select an approved-trial destination.
-4. Start the countdown and perform the trial. The backend automatically stops
-   after the selected duration, or the operator may stop earlier. The timer runs
-   on the backend and is approximate, not a hardware-timed acquisition boundary.
-5. Review the IMU integrity and (when present) EMG quality checks. Accept or
-   reject the trial. Accept triggers the chosen local-folder or GitHub export.
-   A failed export leaves the trial in review and allows the destination to be
-   changed and retried. Rejected and interrupted trials remain in the staging
-   folder and are never exported as accepted.
-6. A trial's original files are kept on the server laptop in `recordings/` as a
-   staging/audit copy; accepted files are additionally exported to the chosen
-   destination. The **Data View** tab lists local attempts with download links
-   for the IMU CSV, optional EMG CSV and metadata. Files are excluded from this
-   app's own Git repository by `.gitignore`.
+## Record a trial
 
-The default simulator shows an **explicitly simulated** idle prediction with
-example confidence, not an ML model. On the Pi source, only messages from the
-connected device appear as predictions; stale predictions disappear after about
-three seconds. Confidence is the device's reported value, not a calibrated
-probability guarantee. Browser plots and EMG filters are display-only; recordings
-contain raw samples. Actual EMG acquisition is not implemented.
+1. Select **Simulated EMG** or **Mudra Link EMG** as the signal source.
+2. Enter sampling frequency, session ID, participant ID, gesture, and the save
+   destination. The app cannot configure the sensor's sampling rate. Leave the
+   frequency blank if it is unknown; frequency plots require a rate.
+3. Click **Run**. The app counts down for three seconds, then starts recording.
+   Click **Stop** to finish; there is no fixed duration. A unique trial ID is
+   generated automatically.
+4. Review the raw-data checks. **Accept** exports the trial; **Reject / repeat**
+   retains it locally as a rejected attempt. You can inspect trial files under
+   **Data View**.
 
-## Simulate the Pi connection
+There are four named active gestures, two explicitly marked placeholder choices,
+and idle. Confirm the last two names with the team before using those labels for
+data collection.
 
-Keep the server running and open a second terminal in the repository folder:
+The simulator's 1,000 Hz EMG is synthetic. Its filters and quality thresholds
+are demonstration settings, not validated settings for a physical sensor. Graph
+settings do not modify the saved raw samples.
 
-```powershell
-.\.venv\Scripts\python.exe tools\simulated_pi.py --url ws://127.0.0.1:8000/ws/device
-```
+## Connect a Mudra Link band
 
-If your server uses port 8001, change the URL to port 8001. In the browser the
-Pi indicator should say **connected / receiving**. Select **Raspberry Pi IMU**.
-The device ID and sensor model identify this client as **simulated**, even
-though it uses the same protocol intended for a Pi. Try a trial and observe the
-start/stop commands printed by the client. Ctrl+C stops the simulated client.
+The optional bridge uses Bluetooth on the **same computer running the backend**.
+It forwards the band's FFF4 notifications to the app. The protocol is based on
+the supplied capture scripts and has not been verified with a physical band in
+this application.
 
-For an actual Pi on the same trusted local network, the server must bind to the
-laptop's network interface, e.g. `--host 0.0.0.0`, and the producer would connect
-to `ws://LAPTOP_IP:8000/ws/device`. This prototype has **no authentication or
-transport encryption**, so use only a trusted isolated network; do not expose it
-to the public internet. Keep participant IDs pseudonymous and follow your team's
-storage practices. Browsers can connect to the laptop using its LAN address.
+1. Install the optional dependencies in the project environment:
 
-## Approved-trial destinations
+       .\.venv\Scripts\python.exe -m pip install -r requirements-mudra.txt
 
-Choose the destination in the Data Collection panel. The destination is used
-**only when the reviewer clicks Accept**; start/stop and rejection do not upload.
+2. Turn on Bluetooth, wake the band, and find its address:
 
-- **Local folder:** enter a folder path on the backend computer. Blank uses
-  `recordings/approved/`. All files are copied there after approval; a different
-  existing file is never overwritten. The staging folder is retained. Do not
-  choose the staging folder itself as the destination.
-- **GitHub:** the repository field is prefilled with
-  [LonghornNeurotech/EMG-Data-Base](https://github.com/LonghornNeurotech/EMG-Data-Base),
-  branch `main` and folder `recordings`; all three can be changed. Local folder
-  remains the default destination until GitHub is selected. The selected branch
-  must already exist. If the repository is empty, a repository maintainer must
-  first create an initial commit, such as a README, to create the branch.
-  Install [GitHub CLI](https://cli.github.com/) on the backend
-  computer and authenticate beforehand with `gh auth login`; `gh auth status`
-  should show the account that has write access. No token is entered in the
-  browser or saved in trial metadata. The backend uses the authenticated `gh`
-  CLI to create one commit containing all files, checking the branch head and
-  refusing to overwrite existing trial filenames. GitHub repository visibility
-  and collaborator permissions determine who can see uploaded recordings.
-  Confirm the destination's visibility and the team's participant-data policy
-  before accepting a trial for upload; public repositories expose uploaded data.
+       .\.venv\Scripts\python.exe tools\mudra_bridge.py --scan
 
-If GitHub export fails (missing CLI, login, permissions, nonexistent/protected
-branch, network, changed branch, or API limits), the trial stays in review and
-its staging metadata stays unaccepted. Fix the destination or authentication
-and click Accept again. On a timeout, first inspect the target branch: a remote
-commit might have succeeded even though the response was lost. The app will not
-blindly overwrite a same-named remote file. Github CLI and local exports run on
-the backend computer; folder paths aren't paths on a remote phone. Large trials
-are loaded into memory for export and may exceed local memory or GitHub's API
-limits; this prototype has not been validated for large uploads.
+3. Start the app server. In a **second terminal**, replace YOUR_BAND_ADDRESS
+   with the address from the scan and start the bridge:
 
-The app is local/trusted-network software without authentication. Anyone who can
-access the backend can control trials or trigger an export using its installed
-credentials. Avoid untrusted networks and do not bind it publicly.
+       .\.venv\Scripts\python.exe tools\mudra_bridge.py --address YOUR_BAND_ADDRESS
 
-## IMU data integrity review
+   If the app server is on port 8001, append
+   --url ws://127.0.0.1:8001/ws/mudra. Accept any operating-system pairing
+   prompt. Close other apps using the band. If activation is required, use the
+   official Mudra app, close it, and retry. This bridge does not read credentials
+   or implement a license handshake.
+4. In the browser select **Mudra Link EMG** and wait for **Mudra: connected ·
+   receiving**. Enter the sampling frequency only if known; it labels the data
+   and controls the display, but does not change the band's rate.
+5. Click **Run**, perform the gesture after the countdown, and press **Stop**.
+   Review the EMG checks before accepting or rejecting the trial.
 
-On stop, the application checks the saved IMU CSV for expected row count,
-consecutive sequence values, strictly increasing valid timestamps, and finite
-values for all six axes. The results appear per channel in the review panel and
-are stored in the JSON sidecar. Acceptance rechecks the raw file and refuses a
-missing/corrupt file. This checks data integrity, **not** sensor calibration,
-clipping, actual frequency, movement execution, or physical signal quality.
+The bridge currently accepts only the supplied script's 112-byte layout: 18
+samples of three little-endian signed 16-bit values followed by a 32-bit device
+timestamp. An unexpected size stops the bridge; it is not silently discarded.
+The three channels are saved as raw counts, not calibrated voltage. The host
+receipt timestamp is repeated for each sample in a frame, and the original
+per-frame device timestamp and sample index are retained.
 
-## Provisional device protocol
+The supplied scripts mention different possible sample rates. The app does not
+assume one. An optional --sample-rate argument can advertise a known rate from
+the bridge; a rate entered in the form must agree with it. Both are treated as
+user-supplied and unverified. When the rate is unknown, the waveform uses sample
+indices and the spectrum is unavailable. Physical-sensor filters are disabled
+until the device settings have been validated.
 
-Only one device WebSocket is supported. The sensor process connects to
-`/ws/device` and sends this first:
+Bridge-generated frame counters can detect gaps within the app connection but
+cannot detect Bluetooth packets lost before the bridge receives them. Queue
+overflow, unexpected frame sizes, disconnects and stream timeouts invalidate an
+active trial. Recording boundaries are timed by the backend and may lag device
+receipt; lossless capture and timestamp alignment are not established.
 
-```json
-{"type":"hello","device_id":"pi-01","sensor_model":"LSM6DSO32","sample_rate_hz":100,"acceleration_unit":"m/s^2","angular_velocity_unit":"rad/s","timestamp_clock":"device monotonic"}
-```
+## Save destinations
 
-The backend responds with `hello_ack`. The device sends sample messages:
+- **Local folder:** Enter a path on the backend computer. Leave it blank to use
+  recordings/approved/. Existing files with different content are not overwritten.
+- **GitHub repository:** The form defaults to LonghornNeurotech/EMG-Data-Base,
+  branch main, folder recordings. These values can be changed; for example,
+  choose raw-data to match the database repo's suggested layout. The branch
+  must exist. Install [GitHub CLI](https://cli.github.com/) on the backend
+  computer and run gh auth login with an account that can write to the repo.
+  Accepting a trial creates a commit with the CSV and metadata. Review repository
+  visibility and participant-data policy before uploading.
 
-```json
-{"type":"sample","timestamp_ns":1000000000,"sequence_number":0,"ax":0.1,"ay":0.2,"az":9.81,"gx":0.01,"gy":0.02,"gz":0.03}
-```
+The backend also retains a staging copy in recordings/ (set EMG_DATA_DIR to
+change it). Failed exports remain in review for retry. Recordings are excluded
+from this app's own Git repository by .gitignore.
 
-`timestamp_ns` and `sequence_number` are nonnegative **JSON integers** from the
-producer; document the actual clock domain. The backend preserves them in the
-CSV. A monotonically increasing sequence counter **must increment by one across
-the device stream**, including between trials. A gap, duplicate, out-of-order
-sample, malformed message, device disconnect, or ~3 second sample timeout
-interrupts an active Pi trial and marks its sidecar `invalid`. It cannot be
-accepted in the UI. For batching use:
+## Review and limitations
 
-```json
-{"type":"sample_batch","samples":[{"timestamp_ns":1000000000,"sequence_number":0,"ax":0.1,"ay":0.2,"az":9.81,"gx":0.01,"gy":0.02,"gz":0.03}]}
-```
+The review panel checks the saved CSV for the expected row count, valid values,
+timestamps and locally generated sample sequence. It displays per-channel
+standard deviation, RMS and range. For Mudra, minimum-length and flatline
+thresholds are **not assessed** until the team defines device-specific values;
+accepting such a trial requires a written reason. Clipping, electrode contact,
+gesture correctness, actual sampling rate, and missing Bluetooth notifications
+are not established by these checks. Corrupt or interrupted recordings cannot
+be accepted.
 
-Batches contain 1–500 samples; each entry omits `type`. All entries are
-validated before processing. `timestamp_ns` may be either Unix or monotonic time
-as declared in `hello`—do not assume two devices share a clock.
+The backend is unauthenticated and unencrypted; use it only on localhost or a
+trusted isolated network. Browser disconnects do not stop the backend trial.
+Use a single Uvicorn worker.
 
-The producer can send inference or errors:
+## Tests
 
-```json
-{"type":"prediction","gesture":"pronation","confidence":0.82}
-{"type":"error","message":"Sensor read failed"}
-```
+    .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+    .\.venv\Scripts\python.exe -m pytest -q
+    node tests/test_signal.js
+    node tests/test_ui.js
 
-Predictions must use one of the five labels and confidence in [0,1]. Invalid
-messages receive an error response. During a trial invalid messages mark the
-trial invalid. A device that loses its socket is reported as disconnected.
-When recording begins/ends the backend sends the device
-`{"type":"start_recording","metadata":{...},"duration_seconds":5,"requested_sample_rate_hz":50}` and
-`{"type":"stop_recording"}`. The device is expected to stream continuously;
-these commands are notifications and **are not acknowledged or verified yet**.
-The Pi client must implement its own acquisition queue and handle backpressure.
-The prototype does not yet guarantee lossless operation under load.
-
-The browser uses `/ws` with `set_source`, `start_recording`, `stop_recording`,
-`review_trial`, and `get_status` messages. `start_recording` includes
-`countdown_seconds`, `duration_seconds`, `requested_sample_rate_hz`, and a
-`destination` object. `GET /health` gives current state; `GET /api/trials`
-lists up to 500 local trial sidecars, and `GET /api/trials/files/{filename}`
-downloads an existing generated trial file from the staging folder.
-The backend records device data before publishing it to browser queues; slow
-browser viewers can skip samples without intentionally dropping recorded data.
-A sample rate reported in the hello is nominal; it is not measured by the app.
-
-## Files and trial validity
-
-IMU CSV columns are
-`participant_id,session_id,gesture,trial_id,sensor_model,timestamp_ns,sequence_number,ax,ay,az,gx,gy,gz`.
-Pi records preserve the producer's counter and timestamps. Built-in simulator
-records use a trial-local sequence starting at 0 and host Unix nanoseconds.
-Acceleration is m/s² (including gravity) and angular velocity is rad/s.
-
-The JSON sidecar records metadata, requested duration/rate, stop reason, actual
-backend-recording duration, nominal sample rate, clock description,
-units, source, sample counts, and `review_status` (`recording`, `needs_review`,
-`accepted`, `rejected`, or `invalid`). Train only on **accepted** recordings;
-never treat missing/unreadable sidecars as accepted. Pi recordings are IMU-only.
-Built-in simulated recordings include a companion `-emg.csv` with four
-arbitrary-unit synthetic channels, not calibrated voltage. EMG timestamps are
-synthetic host-anchored batches and are not synchronized sensor timestamps.
-
-Stopping a trial normally leaves it `needs_review`. Pi disconnects, malformed
-messages, sequence gaps, timeouts, or write failures mark an active trial
-`invalid`. A normal server shutdown while recording also marks it invalid. On
-restart, sidecars left in `recording` state are marked invalid where writable;
-review any unreadable metadata manually. Review state itself is not restored in
-the UI after restart. Browser disconnects alone do not stop a backend trial.
-
-Use one Uvicorn worker; state is in memory. Switching sources or starting a new
-trial is blocked until the current trial is stopped and reviewed. A new attempt
-gets a unique filename even if its labels match an earlier trial; operators must
-track trial IDs and acceptance decisions. Set `IMU_DATA_DIR` to change the
-output folder. Logs/recordings remain on the backend machine.
-
-## Signal display and limitations
-
-The six IMU channels are acceleration X/Y/Z and gyroscope X/Y/Z. Axis selection,
-vertical scales and time window affect display. An IMU frequency view uses a
-256-sample Hann-windowed DFT at the reported nominal IMU rate; dropped browser
-samples reset the display buffer. The time-window plot currently
-uses the reported nominal rate and a fixed sample buffer; it is a visualization,
-not a precise measurement of irregular arrival timing. Built-in simulation also
-has 1–4 selectable EMG channels, a 20–200 Hz bandpass, a 60 Hz notch, and a
-256-sample Hann-windowed spectrum; the filters and spectrum use a nominal 1 kHz
-synthetic stream. The Pi source hides the simulated EMG panel. These tools are
-not validated processing for real sensors or clinical use.
-
-## Verification and outstanding integration
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest -q
-node tests/test_signal.js
-node tests/test_ui.js
-```
-
-Tests cover ten sequential simulated recordings, CSV metadata, no overwritten
-filenames, Pi sample/prediction messages, disconnects, sequence gaps, malformed
-messages, invalid trials, and interrupted-sidecar recovery. Node is only needed
-for the optional browser signal-math and DOM smoke checks. The DOM smoke test
-does not replace a visual browser test. Tests are simulation-based; they do
-not demonstrate real Pi/LSM6DSO32 integration, model accuracy, or the plan's
-10-minute/<1% dropped-sample criterion. Prediction staleness requirements, command acknowledgments, hardware queue sizing,
-sampling-rate verification and exact protocol remain work with the other team.
-
-| Failure mode | Current response / limitation |
-| --- | --- |
-| Pi disconnect, sample gap, or timeout during recording | Trial marked invalid; device status shown; reconnect and repeat. |
-| Malformed Pi message | Error returned; an active Pi trial is marked invalid. |
-| Browser disconnect | Backend continues; reconnect to see in-memory trial status. |
-| Crash or file-write failure | Sidecar invalidated on recovery where possible; never assume missing sidecars are valid. |
-| Duplicate labels | Unique filenames avoid overwrite, but the operator must manage trial numbers. |
-| Wrong sensor units, timestamp clock, sample rate, or physical placement | Not automatically detectable; confirm the device contract and pilot recordings. |
-| Slow disk/network at acquisition rate | Lossless acquisition not established; validate with the real Pi and sequence checks. |
-
-## EMG quality review
-
-After stopping a built-in simulated trial, the trial review panel shows per-channel
-quality dots and an assessment of the **saved, raw EMG CSV**. Inspired by the
-channel-quality display in the original Longhorn Neurotech GUI, it provides:
-
-- File/row-count, sequence-number and timestamp-presence checks, plus finite
-  values for all four recorded channels. These do not check timing regularity.
-- Provisional sample-count and near-flatline checks for the simulator. The
-  simulator-v1 thresholds are 500 samples and standard deviation below 0.01 in
-  **arbitrary simulation units**. They are demonstration settings, not values
-  established for physical EMG or for any particular gesture.
-- Per-channel standard deviation, RMS and range, and an explicit statement that
-  clipping is **not assessed** because ADC range/rails are unknown. These
-  numbers do not establish electrode contact or gesture correctness.
-
-Each result is `pass`, `review`, or `not assessed`. A pass means only that the
-implemented provisional checks passed; it does not certify the data or the
-sensor. At acceptance, the server rechecks the saved file. Flagged flatline or
-short recordings can be accepted only with a written override reason, recorded
-in the metadata; missing/corrupted data cannot be accepted even with an override.
-Rejected attempts are kept and labeled. The report and any override are stored
-in the trial's JSON sidecar. Data should only be used after human review.
-
-**The Pi interface currently records IMU only.** Its review says EMG not
-collected; it does not run EMG checks or block approval of an IMU-only trial.
-Physical EMG integration needs actual sensor units, channels, rates, clipping
-limits, thresholds, and an agreed signal-quality protocol. `app/emg_quality.py`
-is separated from the GUI so a future adapter can supply device-specific
-configuration; without one flatline and minimum thresholds are not assessed.
-The prior GUI's EEG thresholds should not be copied directly onto EMG.
+The Mudra tests use synthetic frames and mocked Bluetooth. A successful test
+does not verify the physical band, license state, firmware, sampling rate,
+signal quality, or sustained acquisition.
