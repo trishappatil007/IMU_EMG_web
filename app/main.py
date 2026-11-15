@@ -130,7 +130,8 @@ class Acquisition:
                                 else self.finished_elapsed),
             "countdown_remaining": self.countdown_remaining, "metadata": self.metadata,
             "emg_quality": self.quality, "emg_file": self.filename, "metadata_file": self.sidecar,
-            "destination": self.destination.model_dump(), "destination_warning": self.destination_warning,\n            "export_result": self.export_result, "error": self.error,
+            "destination": self.destination.model_dump(), "destination_warning": self.destination_warning,
+            "export_result": self.export_result, "error": self.error,
         }
 
     @staticmethod
