@@ -86,7 +86,7 @@ def resolve_local_destination(destination, staging: Path):
         return default_target, (
             'Invalid folder destination: the folder does not exist, is not a '
             'directory, or the backend cannot write to it. '
-            'The files will be saved to the default folder instead.'
+            f'The files will be saved to the default folder: {default_target}'
         )
 
 
