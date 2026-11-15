@@ -98,13 +98,13 @@ function connect(){
         : data.emg_file ? 'Pending files: '+[data.emg_file,data.metadata_file].filter(Boolean).join(', ') : '';
       if(data.destination_warning && data.destination_warning!==lastExportNotice){
         lastExportNotice=data.destination_warning;
-        window.alert(data.destination_warning+'\\n\\nThe backend default folder will be used.');
+        window.alert(data.destination_warning+'\n\nThe backend default folder will be used.');
       }
       if(data.export_result && data.export_result.warning){
         const noticeKey=data.export_result.warning;
         if(noticeKey!==lastExportNotice){
           lastExportNotice=noticeKey;
-          window.alert(data.export_result.warning+'\\n\\nActual save location: '+data.export_result.folder);
+          window.alert(data.export_result.warning+'\n\nActual save location: '+data.export_result.folder);
         }
       }
       if(phase==='review') renderQuality(data.emg_quality);
@@ -121,8 +121,8 @@ function connect(){
       pending=false;
       $('message').textContent=data.message;
       if(Array.isArray(data.fields) && data.fields.length){
-        const details=data.fields.map(item=>item.field+': '+item.message).join('\\n');
-        window.alert('Please check the trial details:\\n\\n'+details);
+        const details=data.fields.map(item=>item.field+': '+item.message).join('\n');
+        window.alert('Please check the trial details:\n\n'+details);
       } else {
         window.alert(data.message || 'The backend rejected the request.');
       }
