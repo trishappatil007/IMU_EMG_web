@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator, model_validator
 
-from app.destinations import Destination, export
+from app.destinations import Destination, export, resolve_local_destination
 from app.emg_quality import SIM_CONFIG, assess_emg_csv
 
 STATIC = Path(__file__).parent / "static"
@@ -108,6 +108,7 @@ class Acquisition:
         self.quality = None
         self.destination = Destination()
         self.export_result = None
+        self.destination_warning = None
         self.error = None
 
     def receiving(self):
@@ -129,7 +130,7 @@ class Acquisition:
                                 else self.finished_elapsed),
             "countdown_remaining": self.countdown_remaining, "metadata": self.metadata,
             "emg_quality": self.quality, "emg_file": self.filename, "metadata_file": self.sidecar,
-            "destination": self.destination.model_dump(), "export_result": self.export_result, "error": self.error,
+            "destination": self.destination.model_dump(), "destination_warning": self.destination_warning,\n            "export_result": self.export_result, "error": self.error,
         }
 
     @staticmethod
@@ -174,6 +175,9 @@ class Acquisition:
         self.metadata = command.metadata.model_dump()
         self.metadata["trial_id"] = uuid4().hex
         self.destination = command.destination
+        self.destination_warning = None
+        if self.destination.kind == "local":
+            _, self.destination_warning = resolve_local_destination(self.destination, self.directory)
         self.requested_rate = command.requested_sample_rate_hz or source_rate
         self.filename = self.sidecar = None
         self.count = 0
