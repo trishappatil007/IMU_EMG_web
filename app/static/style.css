@@ -35,6 +35,8 @@ small,.muted{font-size:12px;font-weight:400;color:#67817b;line-height:1.5}small{
 .unit-pill{background:#e9f1ee;color:#466d63;border-radius:6px;padding:4px 7px;font-size:11px;font-weight:700;white-space:nowrap}
 .chart-host{width:100%;min-height:250px;overflow:hidden}.chart-host .uplot{max-width:100%}.chart-host .u-legend{font-size:11px;color:#486961;text-align:left}.chart-host .u-legend .u-label{font-weight:600}.chart-host .u-legend .u-value{font-variant-numeric:tabular-nums}.chart-note{font-size:11px;color:#69827b;line-height:1.45;min-height:30px;margin:8px 3px 0}
 .quality-review{background:#f4f9f7;border:1px solid #d6e8e1;border-radius:10px;padding:14px;margin:16px 0}
+.device-settings{background:#f4f9f7;border:1px solid #d6e8e1;border-radius:10px;padding:12px 14px;margin:0 0 16px}.device-settings h3{margin:0 0 12px}.device-settings label{margin:12px 0}.device-settings p{margin:8px 0 0}.device-settings .actions{margin:10px 0}
+.device-settings .device-warning{font-size:12px;line-height:1.5;color:#854900;background:#fff3df;border-left:3px solid #cc841e;border-radius:4px;padding:8px 10px}
 .quality-review h3{margin-top:0}.quality-row{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.5;margin:8px 0}
 .quality-dot{flex:none;width:9px;height:9px;border-radius:50%;margin-top:5px;background:#8a9da3}
 .quality-dot-pass{background:#238354}.quality-dot-review{background:#cf8a20}.quality-dot-not-assessed{background:#85959b}

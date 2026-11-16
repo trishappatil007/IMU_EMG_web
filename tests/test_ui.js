@@ -40,8 +40,13 @@ const quality={status:'review',checks:[{name:'File',status:'pass',detail:'OK'}],
 ws.onmessage({data:JSON.stringify({...status,phase:'review',metadata:{participant_id:'P1',session_id:'S1',gesture:'idle'},
   emg_file:'trial-emg.csv',metadata_file:'trial.json',emg_quality:quality})});
 assert.equal(elements['quality-summary'].textContent,'Needs review');assert.equal(elements['accept'].disabled,false);
+assert.equal(paused,true,'the recent live plot is frozen for review');
 assert.equal(elements['override-label'].hidden,false);assert.match(elements.file.textContent,/trial-emg.csv/);
+ws.onmessage({data:JSON.stringify({...status,phase:'review',recording_invalid:true,emg_quality:quality})});
+assert.equal(elements.accept.disabled,true);assert.equal(elements.reject.disabled,false);
+assert.match(elements['quality-summary'].textContent,/Invalid trial/);assert.equal(elements['override-label'].hidden,true);
 ws.onmessage({data:JSON.stringify(status)});
+assert.equal(paused,false,'the plot resumes after an automatically paused review');
 elements.source_select.value='mudra';elements.source_select.onchange();
 ws.onmessage({data:JSON.stringify({...status,source:'mudra',mudra_connected:true,mudra_receiving:true,sample_rate_hz:null})});
 assert.equal(elements.sample_rate_hz.value,'');assert.equal(elements.emg_channels.value,'3');
@@ -55,4 +60,22 @@ elements.calibration_factor.value='-1';elements.calibration_factor.oninput();
 assert.equal(lastSettings.unit,'counts');assert.match(elements.calibration_note.textContent,/positive/);
 elements.pause_plot.onclick();assert.equal(paused,true);
 assert.equal(chartOptions.getSamples().length,0);
-console.log('PASS: EMG form, countdown, Mudra units, and display controls');
+elements.source_select.value='esp32';elements.source_select.onchange();
+ws.onmessage({data:JSON.stringify({...status,source:'esp32',sample_rate_hz:null,emg_channels:2,
+  esp32_connected:false,esp32_receiving:false})});
+assert.equal(elements.run.disabled,true);assert.equal(elements['esp32-settings'].hidden,false);
+elements.esp32_port.value='COM3';elements.esp32_baud.value='921600';elements.esp32_channels.value='6';
+elements.esp32_connect.onclick();
+assert.deepEqual(ws.sent.at(-1),{type:'connect_esp32',port:'COM3',baudrate:921600,channels:6});
+ws.onmessage({data:JSON.stringify({...status,source:'esp32',sample_rate_hz:null,emg_channels:6,
+  esp32_connected:true,esp32_receiving:true,esp32_port:'COM3',esp32_error:'Malformed JSON',esp32_error_count:1})});
+assert.equal(elements.run.disabled,false);assert.equal(elements.emg_channels.value,'6');
+assert.match(elements.esp32_message.textContent,/Malformed JSON/);assert.equal(elements.emg_six.disabled,false);
+ws.onmessage({data:JSON.stringify({type:'emg_batch',source:'esp32',first_sequence:0,recorded_samples:0,
+  samples:[{values:[100,101,102,103,104,105]}]})});
+assert.equal(chartOptions.getSamples()[0][5],105);
+ws.onmessage({data:JSON.stringify({...status,phase:'review',recording_invalid:true,source:'esp32',sample_rate_hz:null,
+  emg_channels:6,esp32_connected:false,esp32_receiving:false,emg_quality:quality})});
+assert.equal(chartOptions.getSamples()[0][5],105,'disconnect during review preserves the last live data');
+assert.equal(paused,true);assert.equal(elements.accept.disabled,true);
+console.log('PASS: EMG form, countdown, physical units, and ESP32 controls');

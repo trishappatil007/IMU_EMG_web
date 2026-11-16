@@ -1,7 +1,7 @@
 /* Live EMG views using the locally bundled uPlot library. */
 (function(root){
   'use strict';
-  const COLORS=['#d85c48','#198b80','#4779c6','#9965b1'];
+  const COLORS=['#d85c48','#198b80','#4779c6','#9965b1','#b16d2c','#617b3b'];
   const FFT_SIZE=512, MAX_PLOT_POINTS=4000, FRAME_MS=1000/30, SPECTRUM_MS=250;
 
   // Keep each channel's local extrema when reducing a dense display window.
@@ -24,10 +24,10 @@
   }
   function alignedData(samples, rate, channels, factor=1, maxPoints=MAX_PLOT_POINTS){
     const indices=displayIndices(samples,channels,maxPoints), last=samples.length-1;
-    const result=[[],[],[],[],[]];
+    const result=Array.from({length:COLORS.length+1},()=>[]);
     for(const index of indices){
       result[0].push(rate ? (index-last)/rate : index-last);
-      for(let ch=0;ch<4;ch++) result[ch+1].push(ch<samples[index].length ? samples[index][ch]*factor : null);
+      for(let ch=0;ch<COLORS.length;ch++) result[ch+1].push(ch<samples[index].length ? samples[index][ch]*factor : null);
     }
     return result;
   }
@@ -81,7 +81,7 @@
               {label:'Magnitude',stroke:'#317cab',width:1.7,points:{show:false},
                value:(_u,v)=>v==null?'—':formatted(v)+' '+get().unit}],
     };
-    const emptyWave=[[0,1],[null,null],[null,null],[null,null],[null,null]];
+    const emptyWave=[[0,1],...COLORS.map(()=>[null,null])];
     wave=new Plot(waveOptions,emptyWave,options.waveHost);
     spectrum=new Plot(spectrumOptions,[[0,1],[null,null]],options.spectrumHost);
 
@@ -98,7 +98,7 @@
       const requested=cfg.rate ? Math.max(2,Math.ceil(cfg.seconds*cfg.rate)) : 1000;
       const windowSamples=all.slice(-requested);
       if(cfg.channels!==shownChannels){
-        for(let ch=1;ch<=4;ch++) wave.setSeries(ch,{show:ch<=cfg.channels});
+        for(let ch=1;ch<=COLORS.length;ch++) wave.setSeries(ch,{show:ch<=cfg.channels});
         shownChannels=cfg.channels;
       }
       const aligned=alignedData(windowSamples,cfg.rate,cfg.channels,cfg.factor);
@@ -107,7 +107,7 @@
       options.spectrumUnit.textContent='Hz · '+cfg.unit;
       const downsampled=windowSamples.length>MAX_PLOT_POINTS ? ' Display downsampled; saved data unchanged.' : '';
       options.waveStatus.textContent=!windowSamples.length ? 'Waiting for EMG samples…'
-        : (cfg.rate ? 'Time relative to newest sample · '+cfg.rate+' Hz '+(cfg.source==='mudra'?'entered, unverified':'nominal')+'.'
+        : (cfg.rate ? 'Time relative to newest sample · '+cfg.rate+' Hz '+(cfg.source!=='simulated'?'entered, unverified':'nominal')+'.'
                     : 'Sampling frequency unknown · horizontal axis shows sample offsets, not seconds.') + downsampled;
       if(!cfg.rate){
         spectrum.setData([[0,1],[null,null]],true);
@@ -122,7 +122,7 @@
         lastSpectrum=now;
         options.spectrumStatus.textContent='EMG '+(cfg.spectrumChannel+1)+' · '+FFT_SIZE+'-point Hann FFT · '
           +formatted(cfg.rate/FFT_SIZE)+' Hz/bin · magnitude ('+cfg.unit+'), not power density'
-          +(cfg.source==='mudra'?' · frequency uses an unverified entered rate.':'.');
+          +(cfg.source!=='simulated'?' · frequency uses an unverified entered rate.':'.');
       }
       version=options.getVersion();settingsKey=nextKey;
     }

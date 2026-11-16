@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, f
 
 from app.destinations import Destination, export, resolve_local_destination
 from app.emg_quality import SIM_CONFIG, assess_emg_csv
+from app.esp32_serial import MAX_CHANNELS, MAX_LINE_BYTES, list_serial_ports, open_serial_port, parse_packet
 
 STATIC = Path(__file__).parent / "static"
 SIM_RATE = 1000
@@ -77,6 +78,21 @@ class MudraFrame(BaseModel):
         return self
 
 
+class ESP32Connect(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    type: Literal["connect_esp32"]
+    port: str = Field(min_length=1, max_length=200)
+    baudrate: int = Field(ge=9600, le=3000000, strict=True)
+    channels: int = Field(ge=1, le=MAX_CHANNELS, strict=True)
+
+    @field_validator("port")
+    @classmethod
+    def valid_port(cls, value):
+        if any(ord(character) < 32 for character in value):
+            raise ValueError("Serial port cannot contain control characters.")
+        return value
+
+
 class Acquisition:
     def __init__(self, directory: Path):
         self.directory = directory
@@ -86,6 +102,14 @@ class Acquisition:
         self.last_mudra_sample = None
         self.last_mudra_frame = None
         self.mudra_sample_sequence = 0
+        self.esp32 = None
+        self.esp32_handle = None
+        self.esp32_task = None
+        self.esp32_lock = asyncio.Lock()
+        self.last_esp32_sample = None
+        self.next_esp32_sequence = None
+        self.esp32_error = None
+        self.esp32_error_count = 0
         self.phase = "idle"
         self.countdown_remaining = None
         self.countdown_task = None
@@ -108,19 +132,44 @@ class Acquisition:
                 and time.monotonic() - self.last_mudra_sample < 3)
 
     def source_rate(self):
-        return SIM_RATE if self.source == "simulated" else (self.mudra["sample_rate_hz"] if self.mudra else None)
+        if self.source == "simulated":
+            return SIM_RATE
+        if self.source == "mudra":
+            return self.mudra["sample_rate_hz"] if self.mudra else None
+        return None
+
+    def esp32_receiving(self):
+        return (self.esp32_handle is not None and self.last_esp32_sample is not None
+                and time.monotonic() - self.last_esp32_sample < 3)
+
+    def channel_count(self):
+        if self.source == "simulated":
+            return SIM_CHANNELS
+        if self.source == "mudra":
+            return MUDRA_CHANNELS
+        if self.esp32:
+            return self.esp32["channels"]
+        if self.phase == "review" and self.trial_info and self.trial_info.get("source") == "esp32":
+            return self.trial_info["emg_channel_count"]
+        return 2
 
     def status(self):
         return {
             "type": "status", "phase": self.phase, "recording": self.phase == "recording",
             "source": self.source, "mudra_connected": self.mudra is not None,
             "mudra_receiving": self.receiving(), "mudra_id": self.mudra["device_id"] if self.mudra else None,
+            "esp32_connected": self.esp32_handle is not None, "esp32_receiving": self.esp32_receiving(),
+            "esp32_port": self.esp32["port"] if self.esp32 else None,
+            "esp32_error": self.esp32_error, "esp32_error_count": self.esp32_error_count,
             "sample_rate_hz": self.source_rate(), "requested_sample_rate_hz": self.requested_rate,
-            "emg_channels": MUDRA_CHANNELS if self.source == "mudra" else SIM_CHANNELS,
+            "emg_channels": self.channel_count(),
             "recorded_samples": self.count, "emg_recorded_samples": self.count,
             "elapsed_seconds": (time.monotonic() - self.started_at if self.phase == "recording" and self.started_at
                                 else self.finished_elapsed),
             "countdown_remaining": self.countdown_remaining, "metadata": self.metadata,
+            "recording_invalid": bool(self.phase == "review" and (
+                not self.count or (self.trial_info and self.trial_info.get("recording_error"))
+                or (self.quality is not None and not self.quality.get("data_integrity")))),
             "emg_quality": self.quality, "emg_file": self.filename, "metadata_file": self.sidecar,
             "destination": self.destination.model_dump(), "destination_warning": self.destination_warning,
             "export_result": self.export_result, "error": self.error,
@@ -149,17 +198,128 @@ class Acquisition:
     def set_source(self, source):
         if self.phase != "idle":
             raise ValueError("Finish and review the current trial before changing sources.")
-        if source not in ("simulated", "mudra"):
-            raise ValueError("Choose simulated EMG or Mudra Link EMG.")
+        if source not in ("simulated", "mudra", "esp32"):
+            raise ValueError("Choose simulated EMG, Mudra Link EMG, or ESP32 USB EMG.")
         self.source = source
         self.error = None
         self.publish(self.status())
+
+    async def connect_esp32(self, command: ESP32Connect):
+        async with self.esp32_lock:
+            if self.phase != "idle":
+                raise ValueError("Finish and review the current trial before connecting a device.")
+            if self.source != "esp32":
+                raise ValueError("Select ESP32 USB EMG before connecting the serial port.")
+            if self.esp32_handle is not None:
+                raise ValueError("An ESP32 serial port is already connected. Disconnect it first.")
+            handle = await asyncio.to_thread(open_serial_port, command.port, command.baudrate)
+            if self.phase != "idle" or self.source != "esp32":
+                await asyncio.to_thread(handle.close)
+                raise ValueError("The trial or source changed while the serial port was opening.")
+            self.esp32 = {"port": command.port, "baudrate": command.baudrate, "channels": command.channels}
+            self.esp32_handle = handle
+            self.last_esp32_sample = self.next_esp32_sequence = None
+            self.esp32_error = None
+            self.esp32_error_count = 0
+            self.esp32_task = asyncio.create_task(self.read_esp32(handle, command.channels))
+            self.publish(self.status())
+
+    async def disconnect_esp32(self, force=False):
+        async with self.esp32_lock:
+            if not force and self.phase not in ("idle", "review"):
+                raise ValueError("Stop and review the trial before disconnecting the ESP32.")
+            handle, task = self.esp32_handle, self.esp32_task
+            self.esp32_handle = self.esp32_task = self.esp32 = None
+            self.last_esp32_sample = self.next_esp32_sequence = None
+            if task:
+                task.cancel()
+            if handle:
+                with suppress(Exception):
+                    await asyncio.to_thread(handle.close)
+            if task:
+                with suppress(asyncio.CancelledError):
+                    await task
+            self.publish(self.status())
+
+    def esp32_fault(self, message):
+        self.esp32_error = message
+        self.esp32_error_count += 1
+        self.last_esp32_sample = self.next_esp32_sequence = None
+        if self.source == "esp32" and self.phase == "recording":
+            self.stop(failed=True, reason="ESP32 input error; trial marked invalid. " + message)
+        elif self.source == "esp32" and self.phase == "countdown":
+            self.stop()
+            self.error = "ESP32 input error; countdown cancelled. " + message
+            self.publish(self.status())
+        else:
+            self.publish(self.status())
+
+    async def read_esp32(self, handle, channels):
+        buffer = bytearray()
+        discarding = False
+        try:
+            while self.esp32_handle is handle:
+                chunk = await asyncio.to_thread(handle.readline, MAX_LINE_BYTES + 1)
+                if not chunk:
+                    continue
+                if discarding:
+                    if chunk.endswith(b"\n"):
+                        discarding = False
+                    continue
+                buffer.extend(chunk)
+                if len(buffer) > MAX_LINE_BYTES:
+                    buffer.clear()
+                    discarding = not chunk.endswith(b"\n")
+                    self.esp32_fault(f"Serial line exceeds {MAX_LINE_BYTES} bytes.")
+                    continue
+                if not chunk.endswith(b"\n"):
+                    continue
+                raw = bytes(buffer).rstrip(b"\r\n")
+                buffer.clear()
+                try:
+                    packet = parse_packet(raw, channels)
+                except ValueError as exc:
+                    self.esp32_fault(str(exc))
+                    continue
+                self.ingest_esp32_packet(packet, time.time_ns())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.esp32_fault("USB serial connection lost. " + str(exc)[:200])
+        finally:
+            if self.esp32_handle is handle:
+                self.esp32_handle = self.esp32 = None
+                self.last_esp32_sample = self.next_esp32_sequence = None
+                with suppress(Exception):
+                    await asyncio.to_thread(handle.close)
+                self.publish(self.status())
+
+    def ingest_esp32_packet(self, packet, timestamp_ns):
+        first = packet["first_sequence"]
+        expected = self.next_esp32_sequence
+        if expected is not None and first != expected:
+            self.esp32_fault(f"ESP32 sample sequence gap or duplicate: expected {expected}, got {first}.")
+        was_receiving = self.esp32_receiving()
+        self.next_esp32_sequence = first + len(packet["samples"])
+        self.last_esp32_sample = time.monotonic()
+        if not was_receiving:
+            self.publish(self.status())
+        if self.source != "esp32":
+            return
+        if self.phase == "recording":
+            self.write_samples(packet["samples"], timestamp_ns, esp32_packet=packet)
+        self.publish({"type": "emg_batch", "source": "esp32", "sample_rate_hz": None,
+                      "first_sequence": first, "recorded_samples": self.count,
+                      "samples": [{"timestamp_ns": str(timestamp_ns), "values": values}
+                                  for values in packet["samples"]]})
 
     def start(self, command: StartCommand):
         if self.phase != "idle":
             raise ValueError("Finish and review the current trial before starting another.")
         if self.source == "mudra" and not self.receiving():
             raise ValueError("Connect the Mudra bridge and wait for EMG samples before recording.")
+        if self.source == "esp32" and not self.esp32_receiving():
+            raise ValueError("Connect the ESP32 and wait for valid EMG packets before recording.")
         self.directory.mkdir(parents=True, exist_ok=True)
         self.metadata = command.metadata.model_dump()
         self.metadata["trial_id"] = uuid4().hex
@@ -185,6 +345,8 @@ class Acquisition:
                 await asyncio.sleep(1)
             if self.source == "mudra" and not self.receiving():
                 raise ValueError("Mudra stopped sending EMG during the countdown.")
+            if self.source == "esp32" and not self.esp32_receiving():
+                raise ValueError("ESP32 stopped sending valid EMG packets during the countdown.")
             self.begin_recording()
         except asyncio.CancelledError:
             raise
@@ -199,24 +361,31 @@ class Acquisition:
     def begin_recording(self):
         stem = f"trial-{self.metadata['trial_id']}"
         self.filename, self.sidecar = stem + "-emg.csv", stem + ".json"
-        channels = MUDRA_CHANNELS if self.source == "mudra" else SIM_CHANNELS
-        extra = ("frame_sequence", "device_timestamp_us", "sample_in_frame") if self.source == "mudra" else ()
+        channels = self.channel_count()
+        extra = {"mudra": ("frame_sequence", "device_timestamp_us", "sample_in_frame"),
+                 "esp32": ("device_sequence", "device_timestamp_us", "sample_in_batch")}.get(self.source, ())
         columns = ("participant_id", "session_id", "gesture", "trial_id", "sensor_model", "timestamp_ns",
                    "sequence_number", *extra, *(f"emg_{i}" for i in range(1, channels + 1)))
         handle = None
+        sensor_model = {"simulated": "simulated_emg", "mudra": "mudra_link", "esp32": "esp32_usb_emg"}[self.source]
+        timestamps = {"simulated": "synthetic host-anchored batches",
+                      "mudra": "timestamp_ns is host receipt time repeated per frame; device_timestamp_us is a 32-bit per-frame device clock",
+                      "esp32": "timestamp_ns is host receipt time repeated per packet; optional device_timestamp_us is the device time for the first sample"}[self.source]
+        sequence_note = {"simulated": "Sample sequence is local to this trial.",
+                         "mudra": "Frame sequence is bridge-generated and cannot detect Bluetooth packet loss.",
+                         "esp32": "device_sequence is supplied by the ESP32; continuity depends on the firmware assigning it at acquisition."}[self.source]
         info = {
             "schema_version": 2, **self.metadata, "source": self.source, "emg_csv_file": self.filename,
-            "emg_sensor_model": "mudra_link" if self.source == "mudra" else "simulated_emg",
+            "emg_sensor_model": sensor_model,
             "emg_channel_count": channels, "emg_sample_rate_hz": self.requested_rate,
-            "emg_sample_rate_type": ("user supplied, unverified" if self.source == "mudra" and self.requested_rate
-                                     else "unknown" if self.source == "mudra" else "nominal"),
-            "emg_unit": "raw signed 16-bit counts" if self.source == "mudra" else "arbitrary simulation units",
-            "emg_timestamps": ("timestamp_ns is host receipt time repeated per frame; device_timestamp_us is a 32-bit per-frame device clock"
-                               if self.source == "mudra" else "synthetic host-anchored batches"),
+            "emg_sample_rate_type": ("nominal" if self.source == "simulated" else
+                                     "user supplied, unverified" if self.requested_rate else "unknown"),
+            "emg_unit": {"simulated": "arbitrary simulation units", "mudra": "raw signed 16-bit counts",
+                         "esp32": "raw device counts"}[self.source],
+            "emg_timestamps": timestamps,
             "emg_channel_names": ["ulnar", "median", "radial"] if self.source == "mudra" else [f"EMG {i}" for i in range(1, channels + 1)],
-            "emg_sequence_note": ("Frame sequence is bridge-generated and cannot detect Bluetooth packet loss."
-                                  if self.source == "mudra" else "Sample sequence is local to this trial."),
-            "device_id": self.mudra["device_id"] if self.source == "mudra" else "simulated",
+            "emg_sequence_note": sequence_note,
+            "device_id": self.mudra["device_id"] if self.source == "mudra" else "esp32-usb" if self.source == "esp32" else "simulated",
             "review_status": "recording", "recorded_samples": 0, "emg_recorded_samples": 0,
             "export_destination": self.destination.model_dump(),
         }
@@ -239,14 +408,18 @@ class Acquisition:
         self.publish(self.status())
 
     def assess(self):
-        channels = MUDRA_CHANNELS if self.source == "mudra" else SIM_CHANNELS
+        channels = self.trial_info["emg_channel_count"]
         result = assess_emg_csv(self.directory / self.filename, channels, self.count,
-                                None if self.source == "mudra" else SIM_CONFIG)
+                                SIM_CONFIG if self.source == "simulated" else None,
+                                source_sequence_column="device_sequence" if self.source == "esp32" else None,
+                                integer_counts=self.source == "esp32")
         if self.source == "mudra":
             result["limitations"].append("Frame counters are generated by the bridge; Bluetooth packet loss is not measured.")
+        elif self.source == "esp32":
+            result["limitations"].append("Source sequence and timestamps depend on the ESP32 firmware; actual sample timing is not verified.")
         return result
 
-    def stop(self, failed=False):
+    def stop(self, failed=False, reason=None):
         if self.phase == "countdown":
             if self.countdown_task:
                 self.countdown_task.cancel()
@@ -268,10 +441,12 @@ class Acquisition:
                                recorded_samples=self.count, emg_recorded_samples=self.count,
                                recording_error=bool(failed), actual_duration_seconds=elapsed,
                                stop_reason="interrupted" if failed else "operator_stop")
+        if failed and reason:
+            self.trial_info["recording_error_detail"] = reason
         self.quality = self.assess()
         self.trial_info["emg_quality"] = self.quality
         if failed:
-            self.error = "Recording interrupted. Reject this trial and check the connection or disk."
+            self.error = reason or "Recording interrupted. Reject this trial and check the connection or disk."
         try:
             self.write_sidecar(self.trial_info)
         except OSError:
@@ -322,16 +497,19 @@ class Acquisition:
         self.phase, self.error = "idle", None
         self.publish(self.status())
 
-    def write_samples(self, samples, timestamp_ns, frame=None):
+    def write_samples(self, samples, timestamp_ns, frame=None, esp32_packet=None):
         try:
             for index, values in enumerate(samples):
                 row = dict(self.metadata)
-                row.update(sensor_model="mudra_link" if frame else "simulated_emg",
+                row.update(sensor_model="mudra_link" if frame else "esp32_usb_emg" if esp32_packet else "simulated_emg",
                            timestamp_ns=timestamp_ns[index] if isinstance(timestamp_ns, list) else timestamp_ns,
                            sequence_number=self.count)
                 if frame:
                     row.update(frame_sequence=frame.frame_sequence, device_timestamp_us=frame.device_timestamp_us,
                                sample_in_frame=index)
+                if esp32_packet:
+                    row.update(device_sequence=esp32_packet["first_sequence"] + index,
+                               device_timestamp_us=esp32_packet.get("device_timestamp_us", ""), sample_in_batch=index)
                 row.update({f"emg_{i + 1}": value for i, value in enumerate(values)})
                 self.writer.writerow(row)
                 self.count += 1
@@ -390,6 +568,8 @@ class Acquisition:
                     self.error = "Mudra EMG stream timed out; countdown cancelled."
                 self.last_mudra_sample = None
                 self.publish(self.status())
+            if self.esp32_handle is not None and self.last_esp32_sample is not None and not self.esp32_receiving():
+                self.esp32_fault("No valid ESP32 packets received for 3 seconds.")
             await asyncio.sleep(SIM_BATCH / SIM_RATE)
 
 
@@ -432,6 +612,7 @@ def create_app(data_dir: Path | None = None):
             await task
         if acquisition.phase in ("countdown", "recording"):
             acquisition.stop(failed=acquisition.phase == "recording")
+        await acquisition.disconnect_esp32(force=True)
 
     app = FastAPI(title="LHNT EMG collection", lifespan=lifespan)
     app.state.acquisition = acquisition
@@ -444,6 +625,14 @@ def create_app(data_dir: Path | None = None):
     @app.get("/health")
     async def health():
         return {"ok": True, **acquisition.status()}
+
+    @app.get("/api/serial-ports")
+    async def serial_ports():
+        from fastapi import HTTPException
+        try:
+            return {"ports": await asyncio.to_thread(list_serial_ports)}
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/trials")
     async def list_trials():
@@ -495,6 +684,10 @@ def create_app(data_dir: Path | None = None):
                         acquisition.stop()
                     elif kind == "set_source":
                         acquisition.set_source(message.get("source"))
+                    elif kind == "connect_esp32":
+                        await acquisition.connect_esp32(ESP32Connect.model_validate(message))
+                    elif kind == "disconnect_esp32":
+                        await acquisition.disconnect_esp32()
                     elif kind == "review_trial":
                         await acquisition.review(message.get("decision"), message.get("override_reason", ""),
                                                  message.get("destination"))

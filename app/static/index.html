@@ -16,7 +16,7 @@
   <header>
     <span class="eyebrow">LONGHORN NEUROTECH / DATA COLLECTION</span>
     <h1>EMG workspace</h1>
-    <p>Connect the band, prepare a trial, and review the signal.</p>
+    <p>Connect an EMG source, prepare a trial, and review the signal.</p>
   </header>
   <nav class="tabs" aria-label="Workspace sections">
     <button type="button" id="show-collection" aria-pressed="true">Data Collection</button>
@@ -25,6 +25,7 @@
   <section class="status" aria-live="polite">
     <span id="connection">Connecting…</span>
     <span id="mudra_status">Mudra: disconnected</span>
+    <span id="esp32_status">ESP32: disconnected</span>
     <span id="recording">Recording status unknown</span>
     <span>Elapsed: <strong id="elapsed">0.0 s</strong></span>
   </section>
@@ -33,8 +34,19 @@
     <section class="card">
       <h2>Set up a trial</h2>
       <label>Signal source
-        <select id="source_select"><option value="simulated">Simulated EMG</option><option value="mudra">Mudra Link EMG</option></select>
+        <select id="source_select"><option value="simulated">Simulated EMG</option><option value="mudra">Mudra Link EMG</option><option value="esp32">ESP32 USB EMG</option></select>
       </label>
+      <div id="esp32-settings" class="device-settings" hidden>
+        <h3>ESP32 USB connection</h3>
+        <label>Serial port<input id="esp32_port" list="serial-ports" placeholder="For example, COM3" autocomplete="off"></label>
+        <datalist id="serial-ports"></datalist>
+        <button type="button" id="refresh-ports" class="secondary small-button">Find ports</button>
+        <p id="ports_message" class="muted" role="status"></p>
+        <label>Baud rate<select id="esp32_baud"><option>115200</option><option>230400</option><option>460800</option><option selected>921600</option></select></label>
+        <label>Channels sent by ESP32<select id="esp32_channels"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+        <div class="actions"><button type="button" id="esp32_connect">Connect ESP32</button><button type="button" id="esp32_disconnect" class="secondary">Disconnect</button></div>
+        <p id="esp32_message" class="muted" role="status">Connect a device that sends the documented LHNT EMG v1 serial format.</p>
+      </div>
       <form id="trial-form">
         <fieldset id="metadata">
           <label>Sampling frequency (Hz)
@@ -96,11 +108,11 @@
         <div class="monitor-badges"><span class="pill live-pill" id="plot_state">● Live view</span><span class="pill"><span id="saved">0</span> samples recorded</span></div>
       </div>
       <div class="plot-options">
-        <label>Channels<select id="emg_channels"><option>1</option><option selected>2</option><option>3</option><option id="emg_four">4</option></select></label>
+        <label>Channels<select id="emg_channels"><option>1</option><option id="emg_two" selected>2</option><option id="emg_three">3</option><option id="emg_four">4</option><option id="emg_five">5</option><option id="emg_six">6</option></select></label>
         <label>Time window<select id="window"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select></label>
         <label>Vertical scale<select id="scale_mode"><option value="auto">Automatic</option><option value="fixed">Fixed range</option></select></label>
         <label><span id="emg_scale_label">Fixed range (± a.u.)</span><input id="emg_scale" type="number" min="0.01" step="any" value="2" disabled></label>
-        <label>Frequency channel<select id="spectrum_channel"><option value="0">EMG 1</option><option value="1">EMG 2</option><option value="2">EMG 3</option><option id="spectrum_four" value="3">EMG 4</option></select></label>
+        <label>Frequency channel<select id="spectrum_channel"><option value="0">EMG 1</option><option id="spectrum_two" value="1">EMG 2</option><option id="spectrum_three" value="2">EMG 3</option><option id="spectrum_four" value="3">EMG 4</option><option id="spectrum_five" value="4">EMG 5</option><option id="spectrum_six" value="5">EMG 6</option></select></label>
       </div>
       <fieldset class="filter-options"><legend>Display filters</legend>
         <label><input type="checkbox" id="bandpass"> 20–200 Hz bandpass</label>

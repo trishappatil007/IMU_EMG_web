@@ -2,11 +2,12 @@
 const $ = id => document.getElementById(id);
 let socket, ready=false, pending=false, phase='idle', source='simulated', mudraReceiving=false;
 let lastSequence=null, filters=[], sourceRate=1000, historyVersion=0, charts=null, lastExportNotice='';
+let esp32Connected=false, esp32Receiving=false, availableChannels=4, recordingInvalid=false, autoPausedForReview=false;
 const history=[];
 const metadataFields=['participant_id','session_id','gesture'];
 
 function resetFilters() {
-  filters=Array.from({length:4},()=>{
+  filters=Array.from({length:6},()=>{
     const stages=[];
     if(source==='simulated' && $('bandpass').checked) stages.push(SignalMath.biquad('highpass',20,1000),SignalMath.biquad('lowpass',200,1000));
     if(source==='simulated' && $('notch').checked) stages.push(SignalMath.biquad('notch',60,1000,30));
@@ -19,14 +20,21 @@ $('bandpass').onchange=$('notch').onchange=()=>{
   resetFilters(); if(charts) charts.reset();
 };
 function controls(){
-  $('run').disabled=!ready || phase!=='idle' || pending || (source==='mudra' && !mudraReceiving);
+  $('run').disabled=!ready || phase!=='idle' || pending || (source==='mudra' && !mudraReceiving) || (source==='esp32' && !esp32Receiving);
   $('source_select').disabled=!ready || phase!=='idle' || pending;
   $('metadata').disabled=!ready || phase!=='idle' || pending;
   $('destination_settings').disabled=!ready || !['idle','review'].includes(phase) || pending;
   $('stop').disabled=!ready || !['countdown','recording'].includes(phase) || pending;
   $('stop').textContent=phase==='countdown' ? 'Cancel countdown' : 'Stop';
-  $('accept').disabled=$('reject').disabled=!ready || phase!=='review' || pending;
+  $('reject').disabled=!ready || phase!=='review' || pending;
+  $('accept').disabled=$('reject').disabled || recordingInvalid;
   $('review-actions').hidden=phase!=='review';
+  $('esp32-settings').hidden=source!=='esp32';
+  const canConfigure=ready && phase==='idle' && !pending;
+  $('esp32_connect').disabled=!canConfigure || esp32Connected;
+  $('esp32_disconnect').disabled=!ready || !['idle','review'].includes(phase) || pending || !esp32Connected;
+  $('esp32_port').disabled=$('esp32_baud').disabled=$('esp32_channels').disabled=!canConfigure || esp32Connected;
+  $('refresh-ports').disabled=!canConfigure || esp32Connected;
 }
 function command(value){
   if(!ready || socket.readyState!==WebSocket.OPEN) return;
@@ -42,6 +50,19 @@ $('destination_kind').onchange=()=>{
   $('github_repo').required=gh; $('github_branch').required=gh;
 };
 $('source_select').onchange=()=>command({type:'set_source',source:$('source_select').value});
+$('esp32_connect').onclick=()=>command({type:'connect_esp32',port:$('esp32_port').value.trim(),
+  baudrate:Number($('esp32_baud').value),channels:Number($('esp32_channels').value)});
+$('esp32_disconnect').onclick=()=>command({type:'disconnect_esp32'});
+$('refresh-ports').onclick=async()=>{
+  $('ports_message').textContent='Looking for serial ports…';
+  try{
+    const response=await fetch('/api/serial-ports'),data=await response.json();
+    if(!response.ok) throw Error(data.detail || 'Could not list serial ports.');
+    $('serial-ports').replaceChildren();
+    data.ports.forEach(port=>{const option=document.createElement('option');option.value=port.device;option.textContent=port.description;$('serial-ports').append(option);});
+    $('ports_message').textContent=data.ports.length ? 'Choose a listed port or enter it manually.' : 'No serial ports found. You can also enter a port manually.';
+  }catch(error){$('ports_message').textContent=error.message;}
+};
 $('trial-form').onsubmit=event=>{
   event.preventDefault();
   const metadata=Object.fromEntries(metadataFields.map(key=>[key,$(key).value.trim()]));
@@ -61,9 +82,14 @@ function connect(){
   socket.onmessage=event=>{
     const data=JSON.parse(event.data);
     if(data.type==='status'){
-      const first=!ready, oldSource=source, oldPhase=phase, oldRate=sourceRate;
+      const first=!ready, oldSource=source, oldPhase=phase, oldRate=sourceRate, oldChannels=availableChannels, oldEsp32=esp32Connected;
       ready=true; pending=false; phase=data.phase; source=data.source; sourceRate=data.sample_rate_hz;
+      recordingInvalid=!!data.recording_invalid;
       mudraReceiving=!!data.mudra_receiving;
+      esp32Connected=!!data.esp32_connected;esp32Receiving=!!data.esp32_receiving;
+      availableChannels=Number(data.emg_channels) || (source==='mudra'?3:source==='esp32'?2:4);
+      if(Number($('emg_channels').value)>availableChannels) $('emg_channels').value=String(availableChannels);
+      if(Number($('spectrum_channel').value)>=availableChannels) $('spectrum_channel').value='0';
       if(data.destination && (first || (phase==='review' && oldPhase!=='review'))){
         const d=data.destination; $('destination_kind').value=d.kind; $('local_folder').value=d.folder;
         $('github_repo').value=d.repository; $('github_branch').value=d.branch; $('github_path').value=d.path;
@@ -71,10 +97,11 @@ function connect(){
       }
       if(first || oldSource!==source){
         $('sample_rate_hz').value=sourceRate==null ? '' : String(sourceRate);
-        if(source==='mudra'){
-          $('bandpass').checked=$('notch').checked=false; $('emg_channels').value='3'; $('emg_scale').value='1000';
-          if($('spectrum_channel').value==='3') $('spectrum_channel').value='0';
-        } else if(oldSource==='mudra'){
+        if(!first) $('calibration_factor').value='';
+        if(source!=='simulated'){
+          $('bandpass').checked=$('notch').checked=false; $('emg_scale').value='1000';
+          $('emg_channels').value=String(availableChannels);
+        } else if(oldSource!=='simulated'){
           $('emg_channels').value='2'; $('emg_scale').value='2';
         }
         lastSequence=null;resetFilters();
@@ -83,17 +110,25 @@ function connect(){
       } else if(phase==='idle' && sourceRate!=null && sourceRate!==oldRate && !$('sample_rate_hz').value){
         $('sample_rate_hz').value=String(sourceRate);
       }
+      if(source==='esp32' && phase!=='review' && !first && (oldChannels!==availableChannels || oldEsp32!==esp32Connected)){
+        $('emg_channels').value=String(availableChannels);$('calibration_factor').value='';
+        lastSequence=null;resetFilters();updatePlotControls();if(charts)charts.reset();
+      }
       $('source_select').value=source;
       $('mudra_status').textContent=data.mudra_connected ? 'Mudra: connected'+(mudraReceiving?' · receiving':' · no recent EMG') : 'Mudra: disconnected';
+      $('esp32_status').textContent=esp32Connected ? 'ESP32: connected'+(esp32Receiving?' · receiving':' · waiting for valid EMG') : 'ESP32: disconnected';
+      $('esp32_message').textContent=(esp32Connected ? 'Port '+data.esp32_port+(esp32Receiving?' · receiving valid packets.':' · waiting for valid packets.') : 'Connect a device that sends the documented LHNT EMG v1 serial format.')
+        +(data.esp32_error ? ' Last stream issue ('+data.esp32_error_count+'): '+data.esp32_error : '');
+      $('esp32_message').className=data.esp32_error?'device-warning':'muted';
       $('recording').textContent=({idle:'○ Idle',countdown:'Starting in '+data.countdown_remaining+'…',
         recording:'● Recording',review:'○ Review trial',saving:'Saving approved trial…'})[phase];
       $('elapsed').textContent=data.elapsed_seconds.toFixed(1)+' s';
       $('saved').textContent=data.recorded_samples;
-      $('bandpass').disabled=$('notch').disabled=source==='mudra';
-      $('emg_four').disabled=$('spectrum_four').disabled=source==='mudra';
-      $('calibration_settings').hidden=source!=='mudra';
-      $('emg_display_note').textContent=source==='mudra'
-        ? 'Mudra data are uncalibrated raw counts. Physical-sensor filters are disabled pending validation.'
+      $('bandpass').disabled=$('notch').disabled=source!=='simulated';
+      ['two','three','four','five','six'].forEach((name,index)=>{$('emg_'+name).disabled=$('spectrum_'+name).disabled=availableChannels<index+2;});
+      $('calibration_settings').hidden=source==='simulated';
+      $('emg_display_note').textContent=source!=='simulated'
+        ? 'Device data are uncalibrated raw counts. Physical-sensor filters are disabled pending validation.'
         : 'Simulated signal in arbitrary units. Display settings do not change saved data.';
       const messages={idle:'Ready. Fill in trial details to begin.',countdown:'Get into the starting pose.',
         recording:'Recording until you press Stop.',review:'Check the signal, then accept or reject the trial.',
@@ -112,7 +147,12 @@ function connect(){
           window.alert(data.export_result.warning+'\n\nActual save location: '+data.export_result.folder);
         }
       }
-      if(phase==='review') renderQuality(data.emg_quality);
+      if(phase==='review'){
+        if(oldPhase!=='review' && charts && !charts.isPaused()){charts.setPaused(true);autoPausedForReview=true;}
+        renderQuality(data.emg_quality);
+      } else if(oldPhase==='review' && autoPausedForReview){
+        if(charts)charts.setPaused(false);autoPausedForReview=false;
+      }
       if(phase==='countdown') $('override-reason').value='';
       if(phase!=='idle' && data.metadata) metadataFields.forEach(key=>{$(key).value=data.metadata[key] ?? '';});
       controls();
@@ -142,10 +182,10 @@ function connect(){
 function renderQuality(report){
   const checks=$('quality-checks'),channels=$('quality-channels');
   checks.replaceChildren();channels.replaceChildren();
-  if(!report){$('quality-summary').textContent='Quality report unavailable.';$('override-label').hidden=false;return;}
+  if(!report){$('quality-summary').textContent=recordingInvalid?'Invalid trial · reject and repeat':'Quality report unavailable.';$('override-label').hidden=recordingInvalid;return;}
   const label={pass:'Provisional checks passed',review:'Needs review','not assessed':'Not assessed','not collected':'EMG not collected'}[report.status] || 'Not assessed';
-  $('quality-summary').textContent=label+(report.config?' · '+report.config.name+' · '+report.config.units:'');
-  $('quality-summary').className='quality-summary-'+report.status.replaceAll(' ','-');
+  $('quality-summary').textContent=recordingInvalid?'Invalid trial · reject and repeat':label+(report.config?' · '+report.config.name+' · '+report.config.units:'');
+  $('quality-summary').className=recordingInvalid?'quality-summary-review':'quality-summary-'+report.status.replaceAll(' ','-');
   const addRow=(container,item,name,detail)=>{
     const row=document.createElement('div'),dot=document.createElement('span'),text=document.createElement('span');
     row.className='quality-row';dot.className='quality-dot quality-dot-'+item.status.replaceAll(' ','-');
@@ -155,7 +195,7 @@ function renderQuality(report){
   (report.checks||[]).forEach(item=>addRow(checks,item,item.name,item.detail));
   (report.channels||[]).forEach(ch=>addRow(channels,ch,ch.channel,ch.detail+(ch.std==null?'':' SD '+ch.std.toFixed(4)+', RMS '+ch.rms.toFixed(4))));
   $('quality-limitations').textContent=(report.limitations||[]).join(' ');
-  $('override-label').hidden=!['review','not assessed'].includes(report.status);
+  $('override-label').hidden=recordingInvalid || !['review','not assessed'].includes(report.status);
 }
 $('show-collection').onclick=()=>{
   $('collection-view').hidden=false;$('data-view').hidden=true;
@@ -184,12 +224,12 @@ async function loadTrials(){
 function positive(id,fallback){const n=Number($(id).value);return Number.isFinite(n)&&n>0?n:fallback;}
 function displayRate(){return source==='simulated'?(sourceRate || 1000):positive('sample_rate_hz',null);}
 function plotSettings(){
-  const calibration=source==='mudra'?positive('calibration_factor',null):null;
+  const calibration=source!=='simulated'?positive('calibration_factor',null):null;
   return {source,rate:displayRate(),seconds:positive('window',5),
-          channels:Math.min(positive('emg_channels',2),source==='mudra'?3:4),
+          channels:Math.min(positive('emg_channels',2),availableChannels),
           spectrumChannel:Number($('spectrum_channel').value),scaleMode:$('scale_mode').value,
           fixedRange:positive('emg_scale',2),factor:calibration||1,
-          unit:source==='mudra'?(calibration?'µV':'counts'):'a.u.'};
+          unit:source!=='simulated'?(calibration?'µV':'counts'):'a.u.'};
 }
 function updatePlotControls(){
   const settings=plotSettings(),entered=$('calibration_factor').value.trim();
@@ -211,7 +251,7 @@ resetFilters();controls();updatePlotControls();
 charts=EmgCharts.create({waveHost:$('emg_plot'),spectrumHost:$('spectrum_plot'),
   waveStatus:$('wave_status'),spectrumStatus:$('spectrum_status'),waveUnit:$('wave_unit'),spectrumUnit:$('spectrum_unit'),
   state:$('plot_state'),pause:$('pause_plot'),getSettings:plotSettings,getSamples:()=>history,getVersion:()=>historyVersion});
-$('pause_plot').onclick=()=>charts.setPaused(!charts.isPaused());
+$('pause_plot').onclick=()=>{charts.setPaused(!charts.isPaused());autoPausedForReview=false;};
 $('reset_zoom').onclick=()=>charts.resetZoom();
 connect();
 setInterval(()=>{if(ready && socket.readyState===WebSocket.OPEN && !pending)socket.send(JSON.stringify({type:'get_status'}));},1000);

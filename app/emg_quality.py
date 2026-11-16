@@ -9,7 +9,8 @@ SIM_CONFIG = {'name': 'simulator-v1', 'minimum_samples': 500,
               'flatline_std_below': 0.01, 'units': 'simulation units'}
 
 
-def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
+def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None,
+                   source_sequence_column=None, integer_counts=False):
     config = dict(config) if config else None
     result = {'version': 1, 'scope': 'raw recorded EMG', 'status': 'review',
               'config': config, 'samples': 0, 'channels': [], 'checks': [],
@@ -17,11 +18,14 @@ def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
                               'The metrics cannot establish electrode contact or gesture correctness.']}
     stats = [dict(n=0, mean=0.0, m2=0.0, minimum=None, maximum=None, invalid=0) for _ in range(channels)]
     sequence_errors = 0
+    source_sequence_errors, last_source_sequence = 0, None
     read_error = None
     try:
         with path.open(newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             required = {'sequence_number', 'timestamp_ns', *(f'emg_{i+1}' for i in range(channels))}
+            if source_sequence_column:
+                required.add(source_sequence_column)
             if not reader.fieldnames or not required.issubset(reader.fieldnames):
                 raise ValueError('Missing required EMG CSV columns.')
             for row in reader:
@@ -32,10 +36,18 @@ def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
                         sequence_errors += 1
                 except (ValueError, TypeError, KeyError):
                     sequence_errors += 1
+                if source_sequence_column:
+                    try:
+                        source_sequence = int(row[source_sequence_column])
+                        if source_sequence < 0 or (last_source_sequence is not None and source_sequence != last_source_sequence + 1):
+                            source_sequence_errors += 1
+                        last_source_sequence = source_sequence
+                    except (ValueError, TypeError, KeyError):
+                        source_sequence_errors += 1
                 for i, stat in enumerate(stats):
                     try:
                         x = float(row[f'emg_{i+1}'])
-                        if not math.isfinite(x):
+                        if not math.isfinite(x) or (integer_counts and (not x.is_integer() or not -(2**31) <= x <= 2**31 - 1)):
                             raise ValueError('non-finite')
                     except (ValueError, TypeError, KeyError):
                         stat['invalid'] += 1
@@ -53,6 +65,9 @@ def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
                              'detail': read_error or f"{result['samples']} rows read; {expected_count} expected."})
     result['checks'].append({'name': 'Sample sequence and timestamps', 'status': 'pass' if not read_error and result['samples'] and not sequence_errors else 'review',
                              'detail': f'{sequence_errors} rows with missing/invalid timestamps or nonconsecutive sequence numbers. Timing regularity is not assessed.'})
+    if source_sequence_column:
+        result['checks'].append({'name': 'Device sample sequence', 'status': 'pass' if not read_error and result['samples'] and not source_sequence_errors else 'review',
+                                 'detail': f'{source_sequence_errors} missing, invalid, or nonconsecutive device sequence values. Firmware must count every acquired sample.'})
     enough = bool(config and result['samples'] >= config['minimum_samples'])
     duration_status = 'pass' if enough else ('review' if config else 'not assessed')
     result['checks'].append({'name': 'Minimum sample count', 'status': duration_status,
@@ -62,6 +77,8 @@ def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
         rms = math.sqrt(stat['m2'] / stat['n'] + stat['mean']**2) if stat['n'] else None
         if stat['invalid'] or not stat['n']:
             state, detail = 'review', f"{stat['invalid']} invalid or missing values."
+        elif not config and stat['n'] >= 2 and stat['minimum'] == stat['maximum']:
+            state, detail = 'review', 'No variation in this channel; inspect for a flat or disconnected signal. Device thresholds are not configured.'
         elif not config:
             state, detail = 'not assessed', 'Flatline threshold not configured for this device.'
         elif not enough:
@@ -72,7 +89,7 @@ def assess_emg_csv(path: Path, channels: int, expected_count: int, config=None):
             state, detail = 'pass', 'Values present; provisional flatline check passed.'
         result['channels'].append({'channel': f'EMG {i+1}', 'status': state, 'detail': detail,
                                    'std': std, 'rms': rms, 'min': stat['minimum'], 'max': stat['maximum']})
-    result['data_integrity'] = bool(count_ok and not sequence_errors and all(stat['invalid'] == 0 and stat['n'] == result['samples'] for stat in stats))
+    result['data_integrity'] = bool(count_ok and not sequence_errors and not source_sequence_errors and all(stat['invalid'] == 0 and stat['n'] == result['samples'] for stat in stats))
     statuses = [c['status'] for c in result['checks'] + result['channels']]
     if all(state == 'pass' for state in statuses):
         result['status'] = 'pass'

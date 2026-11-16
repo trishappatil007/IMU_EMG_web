@@ -9,6 +9,7 @@ const aligned=alignedData([[10,-10,3],[20,-20,4],[30,-30,5]],1000,3,.5);
 assert.deepEqual(aligned[0],[-.002,-.001,0]);assert.deepEqual(aligned[1],[5,10,15]);
 assert.deepEqual(aligned[4],[null,null,null]);
 assert.deepEqual(alignedData([[1],[2]],null,1)[0],[-1,0]);
+assert.deepEqual(alignedData([[1,2,3,4,5,6],[2,3,4,5,6,7]],1000,6)[6],[6,7]);
 
 const plots=[];
 class FakePlot{
