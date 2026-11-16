@@ -35,13 +35,18 @@ class WorkflowTests(unittest.TestCase):
             Trial(participant_id='P1', session_id='S 1', gesture='idle')
         self.assertEqual(Trial(participant_id='P_01-A', session_id='Session.2', gesture='idle').participant_id, 'P_01-A')
 
-    def test_sampling_frequency_must_be_finite_and_in_range(self):
+    def test_sampling_frequency_must_be_positive_and_has_no_5000_hz_limit(self):
         valid = {'type': 'start_recording', 'metadata': {'participant_id': 'P1', 'session_id': 'S1', 'gesture': 'idle'}}
-        for rate in (0, -1, 5000.1, float('inf')):
+        for rate in (0, -1, float('inf')):
             with self.subTest(rate=rate):
                 with self.assertRaises(Exception):
                     StartCommand.model_validate({**valid, 'requested_sample_rate_hz': rate})
-        self.assertEqual(StartCommand.model_validate({**valid, 'requested_sample_rate_hz': 1000}).requested_sample_rate_hz, 1000)
+        for rate in (1000, 5000.1, 10000, 25000):
+            with self.subTest(rate=rate):
+                self.assertEqual(
+                    StartCommand.model_validate({**valid, 'requested_sample_rate_hz': rate}).requested_sample_rate_hz,
+                    rate,
+                )
 
     def test_websocket_returns_field_level_validation_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
