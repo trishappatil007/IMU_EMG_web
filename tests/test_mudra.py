@@ -46,6 +46,7 @@ class MudraTests(unittest.TestCase):
     def test_emg_only_trial_review_and_local_export(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / 'approved').mkdir()
             with TestClient(create_app(root / 'staging')) as client, client.websocket_connect('/ws') as browser:
                 until(browser, 'status')
                 with client.websocket_connect('/ws/mudra') as device:

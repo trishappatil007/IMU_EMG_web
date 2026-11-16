@@ -4,8 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>LHNT · EMG collection</title>
+  <link rel="stylesheet" href="/static/vendor/uPlot.min.css">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/uPlot.iife.min.js" defer></script>
   <script src="/static/signal.js" defer></script>
+  <script src="/static/charts.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -88,21 +91,33 @@
     </section>
 
     <section class="card signal-card">
-      <div class="section-heading"><div><h2>Live EMG</h2><p id="emg_display_note" class="muted">Raw samples are recorded; display settings do not change saved data.</p></div><span class="pill"><span id="saved">0</span> samples recorded</span></div>
+      <div class="section-heading">
+        <div><span class="section-kicker">SIGNAL MONITOR</span><h2>Live EMG</h2><p id="emg_display_note" class="muted">Raw samples are recorded; display settings do not change saved data.</p></div>
+        <div class="monitor-badges"><span class="pill live-pill" id="plot_state">● Live view</span><span class="pill"><span id="saved">0</span> samples recorded</span></div>
+      </div>
       <div class="plot-options">
-        <label>Channels shown<select id="emg_channels"><option>1</option><option selected>2</option><option>3</option><option id="emg_four">4</option></select></label>
-        <label><span id="emg_scale_label">Vertical range (± simulation units)</span><input id="emg_scale" type="number" min="0.01" step="any" value="2"></label>
-        <label>Time window<select id="window"><option>1</option><option>2</option><option selected>5</option><option>10</option></select></label>
+        <label>Channels<select id="emg_channels"><option>1</option><option selected>2</option><option>3</option><option id="emg_four">4</option></select></label>
+        <label>Time window<select id="window"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select></label>
+        <label>Vertical scale<select id="scale_mode"><option value="auto">Automatic</option><option value="fixed">Fixed range</option></select></label>
+        <label><span id="emg_scale_label">Fixed range (± a.u.)</span><input id="emg_scale" type="number" min="0.01" step="any" value="2" disabled></label>
         <label>Frequency channel<select id="spectrum_channel"><option value="0">EMG 1</option><option value="1">EMG 2</option><option value="2">EMG 3</option><option id="spectrum_four" value="3">EMG 4</option></select></label>
       </div>
       <fieldset class="filter-options"><legend>Display filters</legend>
         <label><input type="checkbox" id="bandpass"> 20–200 Hz bandpass</label>
         <label><input type="checkbox" id="notch"> 60 Hz notch</label>
       </fieldset>
-      <p class="legend">EMG 1 — coral &nbsp; EMG 2 — teal &nbsp; EMG 3 — blue &nbsp; EMG 4 — purple</p>
+      <details id="calibration_settings" class="calibration" hidden>
+        <summary>Optional display calibration</summary>
+        <label>Verified scale factor (µV per count)<input id="calibration_factor" type="number" min="0.000000001" step="any" placeholder="Leave empty to show raw counts"></label>
+        <small id="calibration_note">Use only a verified factor applicable to all channels. This changes the plots only; CSV data stay in raw counts.</small>
+      </details>
+      <div class="chart-toolbar">
+        <div><button type="button" class="secondary small-button" id="pause_plot" aria-pressed="false">Pause plots</button> <button type="button" class="secondary small-button" id="reset_zoom">Reset zoom</button></div>
+        <p class="muted">Pause to inspect and drag to zoom. Recording continues while plots are paused.</p>
+      </div>
       <div class="emg-panels">
-        <div><h3 id="emg_title">Waveform · simulation units</h3><canvas id="emg_plot" width="800" height="260" role="img" aria-label="Live EMG waveform"></canvas></div>
-        <div><h3>Frequency spectrum</h3><canvas id="spectrum_plot" width="800" height="260" role="img" aria-label="EMG frequency spectrum"></canvas><p id="spectrum_status" class="muted">Waiting for samples…</p></div>
+        <article class="chart-card"><div class="chart-header"><div><span class="chart-eyebrow">TIME DOMAIN</span><h3 id="emg_title">EMG waveform</h3></div><span id="wave_unit" class="unit-pill">a.u.</span></div><div id="emg_plot" class="chart-host" role="img" aria-label="Live EMG waveform"></div><p id="wave_status" class="chart-note">Waiting for EMG samples…</p></article>
+        <article class="chart-card"><div class="chart-header"><div><span class="chart-eyebrow">FREQUENCY DOMAIN</span><h3>Frequency spectrum</h3></div><span id="spectrum_unit" class="unit-pill">Hz</span></div><div id="spectrum_plot" class="chart-host" role="img" aria-label="EMG frequency spectrum"></div><p id="spectrum_status" class="chart-note">Waiting for EMG samples…</p></article>
       </div>
     </section>
   </div>

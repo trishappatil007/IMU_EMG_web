@@ -1,8 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let socket, ready=false, pending=false, phase='idle', source='simulated', mudraReceiving=false;
-let lastSequence=null, filters=[], sourceRate=1000, lastExportNotice='';
-const history=[], colors=['#c75c42','#168b80','#4475c6','#9f67aa'];
+let lastSequence=null, filters=[], sourceRate=1000, historyVersion=0, charts=null, lastExportNotice='';
+const history=[];
 const metadataFields=['participant_id','session_id','gesture'];
 
 function resetFilters() {
@@ -13,8 +13,11 @@ function resetFilters() {
     return stages;
   });
   history.length=0;
+  historyVersion++;
 }
-$('bandpass').onchange=$('notch').onchange=resetFilters;
+$('bandpass').onchange=$('notch').onchange=()=>{
+  resetFilters(); if(charts) charts.reset();
+};
 function controls(){
   $('run').disabled=!ready || phase!=='idle' || pending || (source==='mudra' && !mudraReceiving);
   $('source_select').disabled=!ready || phase!=='idle' || pending;
@@ -75,6 +78,8 @@ function connect(){
           $('emg_channels').value='2'; $('emg_scale').value='2';
         }
         lastSequence=null;resetFilters();
+        updatePlotControls();
+        if(charts) charts.reset();
       } else if(phase==='idle' && sourceRate!=null && sourceRate!==oldRate && !$('sample_rate_hz').value){
         $('sample_rate_hz').value=String(sourceRate);
       }
@@ -86,11 +91,10 @@ function connect(){
       $('saved').textContent=data.recorded_samples;
       $('bandpass').disabled=$('notch').disabled=source==='mudra';
       $('emg_four').disabled=$('spectrum_four').disabled=source==='mudra';
-      $('emg_scale_label').textContent=source==='mudra'?'Vertical range (± raw counts)':'Vertical range (± simulation units)';
-      $('emg_title').textContent=source==='mudra'?'Waveform · raw counts':'Waveform · simulation units';
+      $('calibration_settings').hidden=source!=='mudra';
       $('emg_display_note').textContent=source==='mudra'
-        ? 'Three raw Mudra channels. Filters are disabled until the device settings are validated.'
-        : 'Raw samples are recorded; display settings do not change saved data.';
+        ? 'Mudra data are uncalibrated raw counts. Physical-sensor filters are disabled pending validation.'
+        : 'Simulated signal in arbitrary units. Display settings do not change saved data.';
       const messages={idle:'Ready. Fill in trial details to begin.',countdown:'Get into the starting pose.',
         recording:'Recording until you press Stop.',review:'Check the signal, then accept or reject the trial.',
         saving:'Saving the approved trial…'};
@@ -116,7 +120,8 @@ function connect(){
       if(lastSequence!==null && data.first_sequence!==lastSequence) resetFilters();
       lastSequence=data.first_sequence+data.samples.length;
       for(const sample of data.samples) history.push(sample.values.map((value,i)=>filters[i].reduce((v,filter)=>filter(v),value)));
-      if(history.length>10000) history.splice(0,history.length-10000);
+      if(history.length>55000) history.splice(0,history.length-50000);
+      historyVersion++;
       $('saved').textContent=data.recorded_samples;
     } else if(data.type==='error'){
       pending=false;
@@ -177,32 +182,36 @@ async function loadTrials(){
   }catch(error){box.textContent='Could not load trials: '+error.message;}
 }
 function positive(id,fallback){const n=Number($(id).value);return Number.isFinite(n)&&n>0?n:fallback;}
-function displayRate(){return positive('sample_rate_hz',source==='simulated'?1000:null);}
-function drawWave(){
-  const canvas=$('emg_plot'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height,left=60,bottom=26,top=12,width=w-left-8,height=h-top-bottom;
-  const rate=displayRate(),seconds=positive('window',5),span=rate?Math.max(2,Math.ceil(seconds*rate)):1000;
-  const samples=history.slice(-span),count=Math.min(Number($('emg_channels').value),source==='mudra'?3:4),limit=positive('emg_scale',2);
-  ctx.clearRect(0,0,w,h);ctx.font='12px system-ui';ctx.fillStyle='#607a74';ctx.strokeStyle='#dce9e4';
-  for(let i=0;i<=4;i++){const y=top+height*i/4;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText((limit*(1-i/2)).toFixed(1),0,y+4);}
-  ctx.fillText(rate?'-'+seconds+' s':'-'+span+' samples',left,h-4);ctx.fillText('now',w-35,h-4);ctx.fillText(source==='mudra'?'counts':'a.u.',0,h-4);
-  ctx.save();ctx.beginPath();ctx.rect(left,top,width,height);ctx.clip();
-  for(let channel=0;channel<count;channel++){
-    ctx.strokeStyle=colors[channel];ctx.lineWidth=1.5;ctx.beginPath();
-    samples.forEach((sample,i)=>{const x=left+width*(1-(samples.length-1-i)/(span-1)),y=top+height*(.5-sample[channel]/(2*limit));if(!i)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();
-  }
-  ctx.restore();
+function displayRate(){return source==='simulated'?(sourceRate || 1000):positive('sample_rate_hz',null);}
+function plotSettings(){
+  const calibration=source==='mudra'?positive('calibration_factor',null):null;
+  return {source,rate:displayRate(),seconds:positive('window',5),
+          channels:Math.min(positive('emg_channels',2),source==='mudra'?3:4),
+          spectrumChannel:Number($('spectrum_channel').value),scaleMode:$('scale_mode').value,
+          fixedRange:positive('emg_scale',2),factor:calibration||1,
+          unit:source==='mudra'?(calibration?'µV':'counts'):'a.u.'};
 }
-function drawSpectrum(){
-  const canvas=$('spectrum_plot'),ctx=canvas.getContext('2d'),n=256,rate=displayRate();
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(!rate){$('spectrum_status').textContent='Enter a known sampling frequency to see the spectrum.';return;}
-  if(history.length<n){$('spectrum_status').textContent='Waiting for 256 continuous EMG samples…';return;}
-  const channel=Number($('spectrum_channel').value),spec=SignalMath.spectrum(history.slice(-n).map(x=>x[channel]),rate);
-  const maximum=Math.max(...spec.map(p=>p.amplitude),.001),nyquist=rate/2,w=canvas.width,h=canvas.height,left=55,bottom=28;
-  ctx.fillStyle='#607a74';ctx.font='12px system-ui';ctx.fillText(maximum.toFixed(2),0,15);ctx.fillText('0',left,h-5);ctx.fillText(nyquist.toFixed(1)+' Hz',w-70,h-5);
-  ctx.strokeStyle=colors[channel];ctx.lineWidth=2;ctx.beginPath();spec.forEach((p,i)=>{const x=left+(w-left-8)*p.frequency/nyquist,y=(h-bottom)*(1-p.amplitude/maximum);if(!i)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();
-  $('spectrum_status').textContent='EMG '+(channel+1)+' · 256 samples · '+rate+' Hz '+(source==='mudra'?'user-supplied, unverified':'nominal')+' · amplitude auto-scaled';
+function updatePlotControls(){
+  const settings=plotSettings(),entered=$('calibration_factor').value.trim();
+  $('emg_scale').disabled=settings.scaleMode!=='fixed';
+  $('emg_scale_label').textContent='Fixed range (± '+settings.unit+')';
+  $('calibration_note').textContent=entered && !positive('calibration_factor',null)
+    ? 'Enter a positive verified factor; plots are currently in raw counts.'
+    : 'Use only a verified factor applicable to all channels. This changes the plots only; CSV data stay in raw counts.';
 }
-resetFilters();controls();connect();
-setInterval(()=>{drawWave();drawSpectrum();},250);
+function refreshPlots(){
+  updatePlotControls();
+  if(charts) charts.draw(performance.now(),true);
+}
+for(const id of ['window','emg_channels','spectrum_channel','scale_mode','emg_scale','sample_rate_hz','calibration_factor']){
+  $(id).onchange=refreshPlots;
+}
+$('calibration_factor').oninput=$('emg_scale').oninput=$('sample_rate_hz').oninput=refreshPlots;
+resetFilters();controls();updatePlotControls();
+charts=EmgCharts.create({waveHost:$('emg_plot'),spectrumHost:$('spectrum_plot'),
+  waveStatus:$('wave_status'),spectrumStatus:$('spectrum_status'),waveUnit:$('wave_unit'),spectrumUnit:$('spectrum_unit'),
+  state:$('plot_state'),pause:$('pause_plot'),getSettings:plotSettings,getSamples:()=>history,getVersion:()=>historyVersion});
+$('pause_plot').onclick=()=>charts.setPaused(!charts.isPaused());
+$('reset_zoom').onclick=()=>charts.resetZoom();
+connect();
 setInterval(()=>{if(ready && socket.readyState===WebSocket.OPEN && !pending)socket.send(JSON.stringify({type:'get_status'}));},1000);

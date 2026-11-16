@@ -8,11 +8,16 @@ function element(id){return {id,value:'',textContent:'',checked:false,disabled:f
   getContext(){return new Proxy({},{get(t,k){return t[k]||(()=>{})},set(t,k,v){t[k]=v;return true}})}};}
 ids.forEach(id=>elements[id]=element(id));
 Object.entries({participant_id:'P1',session_id:'S1',gesture:'idle',sample_rate_hz:'1000',destination_kind:'local',
-  github_branch:'main',github_path:'recordings',window:'5',emg_channels:'2',spectrum_channel:'0',emg_scale:'2'})
+  github_branch:'main',github_path:'recordings',window:'5',emg_channels:'2',spectrum_channel:'0',emg_scale:'2',
+  scale_mode:'auto',calibration_factor:''})
   .forEach(([k,v])=>elements[k].value=v);
 const document={getElementById:id=>{if(!elements[id])throw Error('Missing '+id);return elements[id]},createElement:()=>element('generated')};
 let ws;class FakeSocket{static OPEN=1;constructor(){this.readyState=1;this.sent=[];ws=this}send(x){this.sent.push(JSON.parse(x))}close(){}}
+let chartOptions,lastSettings,paused=false;
+const EmgCharts={create(options){chartOptions=options;return {draw(){lastSettings=options.getSettings()},reset(){},
+  setPaused(value){paused=value},isPaused(){return paused},resetZoom(){},resize(){}}}};
 const context={document,WebSocket:FakeSocket,location:{protocol:'http:',host:'localhost'},setInterval(){},setTimeout(){},console,
+  performance:{now:()=>1000},window:{alert(){}},EmgCharts,
   fetch:async()=>({ok:true,json:async()=>({trials:[]})}),SignalMath:require('../app/static/signal.js')};
 vm.createContext(context);vm.runInContext(fs.readFileSync('app/static/app.js','utf8'),context);ws.onopen();
 const status={type:'status',phase:'idle',source:'simulated',mudra_connected:false,mudra_receiving:false,mudra_id:null,
@@ -20,6 +25,9 @@ const status={type:'status',phase:'idle',source:'simulated',mudra_connected:fals
   destination:{kind:'local',folder:'',repository:'LonghornNeurotech/EMG-Data-Base',branch:'main',path:'recordings'}};
 ws.onmessage({data:JSON.stringify(status)});
 assert.equal(elements.run.disabled,false);
+elements.sample_rate_hz.value='500';elements.sample_rate_hz.oninput();
+assert.equal(lastSettings.rate,1000,'the simulation chart uses its actual rate, not a conflicting form entry');
+elements.sample_rate_hz.value='1000';
 elements['trial-form'].onsubmit({preventDefault(){}});
 let cmd=ws.sent.at(-1);
 assert.equal(cmd.type,'start_recording');assert.equal(cmd.countdown_seconds,3);
@@ -41,5 +49,10 @@ assert.equal(elements.bandpass.disabled,true);assert.equal(elements.run.disabled
 elements.sample_rate_hz.value='840';
 elements['trial-form'].onsubmit({preventDefault(){}});
 assert.equal(ws.sent.at(-1).requested_sample_rate_hz,840);
-vm.runInContext('drawWave();drawSpectrum()',context);
-console.log('PASS: EMG-only form, fixed countdown, manual stop, and Mudra source');
+elements.calibration_factor.value='0.035';elements.calibration_factor.oninput();
+assert.equal(lastSettings.unit,'µV');assert.equal(lastSettings.factor,.035);
+elements.calibration_factor.value='-1';elements.calibration_factor.oninput();
+assert.equal(lastSettings.unit,'counts');assert.match(elements.calibration_note.textContent,/positive/);
+elements.pause_plot.onclick();assert.equal(paused,true);
+assert.equal(chartOptions.getSamples().length,0);
+console.log('PASS: EMG form, countdown, Mudra units, and display controls');

@@ -47,6 +47,28 @@ The simulator's 1,000 Hz EMG is synthetic. Its filters and quality thresholds
 are demonstration settings, not validated settings for a physical sensor. Graph
 settings do not modify the saved raw samples.
 
+## Live signal display
+
+The waveform and frequency charts use the locally bundled uPlot 1.6.32
+(MIT license); no browser extension or internet connection is needed. The
+waveform updates on animation frames, with a target of up to 30 redraws per
+second; the FFT updates at most four times per second. Actual performance
+depends on the computer and browser. Pause the plots to inspect values or drag
+to zoom, then use Reset zoom or Resume plots. Pausing affects the display only;
+the backend continues recording.
+
+The waveform uses seconds relative to the latest sample when a rate is known
+and sample offsets when it is unknown. The 512-point Hann-windowed FFT reports
+frequency in Hz and magnitude in the input unit, not power spectral density.
+Entered Mudra rates are unverified: their time and frequency axes are estimates.
+Dense waveforms are visually downsampled while preserving local peaks; the FFT
+and saved CSV use the full-resolution samples.
+
+Simulated EMG is shown in arbitrary units. Mudra EMG is shown in raw signed
+counts by default because its voltage calibration is not established. A
+verified, common µV-per-count factor may optionally be entered for display
+only. This never changes the recorded counts or the quality checks.
+
 ## Connect a Mudra Link band
 
 The optional bridge uses Bluetooth on the **same computer running the backend**.
@@ -134,6 +156,7 @@ Use a single Uvicorn worker.
     .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
     .\.venv\Scripts\python.exe -m pytest -q
     node tests/test_signal.js
+    node tests/test_charts.js
     node tests/test_ui.js
 
 The Mudra tests use synthetic frames and mocked Bluetooth. A successful test

@@ -85,6 +85,7 @@ class WorkflowTests(unittest.TestCase):
     def test_simulated_manual_record_review_and_export(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / 'approved').mkdir()
             with TestClient(create_app(root / 'staging')) as client, client.websocket_connect('/ws') as ws:
                 status = until(ws, 'status')
                 self.assertEqual(status['sample_rate_hz'], 1000)
@@ -97,7 +98,7 @@ class WorkflowTests(unittest.TestCase):
                 review = until(ws, 'status', lambda m: m['phase'] == 'review')
                 self.assertTrue(review['emg_file'].endswith('-emg.csv'))
                 self.assertTrue(review['emg_quality']['data_integrity'])
-                self.assertFalse((root / 'approved').exists())
+                self.assertEqual(list((root / 'approved').iterdir()), [])
                 ws.send_json({'type': 'review_trial', 'decision': 'accepted', 'override_reason': 'Short simulation'})
                 saved = until(ws, 'status', lambda m: m['phase'] == 'idle')
                 self.assertEqual(len(saved['export_result']['files']), 2)

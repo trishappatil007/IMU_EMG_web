@@ -167,7 +167,7 @@ class Acquisition:
         self.destination_warning = None
         if self.destination.kind == "local":
             _, self.destination_warning = resolve_local_destination(self.destination, self.directory)
-        self.requested_rate = command.requested_sample_rate_hz if command.requested_sample_rate_hz is not None else source_rate
+        self.requested_rate = command.requested_sample_rate_hz if command.requested_sample_rate_hz is not None else self.source_rate()
         self.filename = self.sidecar = None
         self.count = 0
         self.quality = self.export_result = self.error = None
