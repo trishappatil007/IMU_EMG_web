@@ -50,22 +50,14 @@ class StartCommand(BaseModel):
     type: Literal["start_recording"]
     metadata: Trial
     countdown_seconds: int = Field(default=3, ge=0, le=30, strict=True)
-    requested_sample_rate_hz: float | None = Field(default=None, gt=0, le=5000, strict=True)
+    requested_sample_rate_hz: float | None = Field(default=None, gt=0, strict=True)
     destination: Destination = Field(default_factory=Destination)
-
-    @field_validator("requested_sample_rate_hz")
-    @classmethod
-    def validate_sample_rate(cls, value):
-        if value is not None and (not math.isfinite(value) or value <= 0 or value > 5000):
-            raise ValueError("Sampling frequency must be a finite number greater than 0 and no more than 5000 Hz.")
-        return value
-
 
 class MudraHello(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     type: Literal["hello"]
     device_id: str = Field(min_length=1, max_length=100)
-    sample_rate_hz: float | None = Field(default=None, gt=0, le=5000)
+    sample_rate_hz: float | None = Field(default=None, gt=0)
 
 
 class MudraFrame(BaseModel):
@@ -168,10 +160,6 @@ class Acquisition:
             raise ValueError("Finish and review the current trial before starting another.")
         if self.source == "mudra" and not self.receiving():
             raise ValueError("Connect the Mudra bridge and wait for EMG samples before recording.")
-        source_rate = self.source_rate()
-        if (command.requested_sample_rate_hz is not None and source_rate is not None
-                and abs(command.requested_sample_rate_hz - source_rate) > 1e-6):
-            raise ValueError(f"Sampling rate must match the source rate ({source_rate} Hz); the app does not configure the sensor.")
         self.directory.mkdir(parents=True, exist_ok=True)
         self.metadata = command.metadata.model_dump()
         self.metadata["trial_id"] = uuid4().hex
@@ -179,7 +167,7 @@ class Acquisition:
         self.destination_warning = None
         if self.destination.kind == "local":
             _, self.destination_warning = resolve_local_destination(self.destination, self.directory)
-        self.requested_rate = command.requested_sample_rate_hz or source_rate
+        self.requested_rate = command.requested_sample_rate_hz if command.requested_sample_rate_hz is not None else source_rate
         self.filename = self.sidecar = None
         self.count = 0
         self.quality = self.export_result = self.error = None
